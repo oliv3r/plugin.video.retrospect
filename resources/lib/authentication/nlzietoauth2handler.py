@@ -81,6 +81,10 @@ class NLZIETOAuth2Handler(OAuth2Handler):
     def use_device_flow(self) -> bool: return self._use_device_flow
 
     @property
+    def profile_type(self) -> str:
+        return AddonSettings.get_setting(f"{self.prefix}profile_type", store=LOCAL) or ""
+
+    @property
     def token_endpoint(self) -> str: return self.TOKEN_ENDPOINT
 
     @property
@@ -317,6 +321,12 @@ class NLZIETOAuth2Handler(OAuth2Handler):
                 return None
 
             Logger.debug(f"NLZIET: Found {len(profile_list)} profile(s)")
+            known_types = {"Adult", "ChildYoung"}
+            for profile in profile_list:
+                ptype = profile.get("type", "")
+                if ptype not in known_types:
+                    Logger.warning("NLZIET: Unknown profile type '%s' for '%s'",
+                                   ptype, profile.get("displayName", "?"))
             return profile_list
 
         except Exception as e:
@@ -369,22 +379,54 @@ class NLZIETOAuth2Handler(OAuth2Handler):
         return None
 
     def set_profile(self, profile_id: str) -> bool:
-        """Set the selected profile for this user.
+        """Set the selected profile and exchange the token for a profile-scoped one.
 
-        Validates the profile exists before storing it. The profile ID is stored in
-        Kodi addon settings for persistence across sessions.
+        Validates the profile exists, then performs a token exchange at the
+        ``/connect/token`` endpoint with ``grant_type=profile``.  The returned
+        access token is scoped to the selected profile, which is required for
+        the API to apply profile-level content filtering (e.g. kids profiles).
 
         :param profile_id: The unique ID of the profile to select.
-        :return: True if profile was validated and stored, False if profile doesn't exist.
+        :return: True if profile was validated, token exchanged and stored.
         """
         profile = self.get_nlziet_profile(profile_id)
         if not profile:
             Logger.error(f"NLZIET: Cannot set profile - profile ID {profile_id[:20]}... not found")
             return False
 
+        access_token = self.get_valid_token()
+        if not access_token:
+            Logger.error("NLZIET: No access token available for profile switch")
+            return False
+
+        data = {
+            "client_id": self.client_id_val,
+            "profile": profile_id,
+            "scope": "openid api",
+            "grant_type": "profile"
+        }
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json"
+        }
+        try:
+            response = UriHandler.open(
+                self.token_endpoint, data=data,
+                additional_headers=headers, no_cache=True)
+            tokens = JsonHelper(response).json
+            self._store_tokens(tokens)
+        except Exception as e:
+            Logger.error(f"NLZIET: Profile token exchange failed: {e}")
+            return False
+
         self._set_profile_settings(profile_id, profile["displayName"], profile["type"])
-        Logger.info(f"NLZIET: Selected profile '{profile['displayName']}' (type: {profile['type']})")
+        Logger.info(f"NLZIET: Switched to profile '{profile['displayName']}' (type: {profile['type']})")
         return True
+
+    def clear_profile(self) -> None:
+        """Clear the currently selected profile."""
+        self._set_profile_settings()
+        Logger.info("NLZIET: Profile selection cleared")
 
     def list_devices(self, access_token: str = None) -> Optional[list]:
         """List all linked devices for the current user.

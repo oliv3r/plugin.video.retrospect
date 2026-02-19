@@ -121,7 +121,7 @@ class TestNLZIETAuthLive(unittest.TestCase):
             Logger.debug(f"Created profile directory: {Config.profileDir}")
 
         # 4. Initialize handler
-        cls.handler = NLZIETOAuth2Handler()
+        cls.handler = NLZIETOAuth2Handler(use_device_flow=False)
 
         # 5. Load credentials
         cls.username = os.getenv('NLZIET_USERNAME')
@@ -669,7 +669,7 @@ class TestNLZIETAuthMocked(TestNLZIETAuthLive):
         if not os.path.exists(Config.profileDir):
             os.makedirs(Config.profileDir, exist_ok=True)
 
-        cls.handler = NLZIETOAuth2Handler()
+        cls.handler = NLZIETOAuth2Handler(use_device_flow=False)
 
         cls.username = "test@example.com"
         cls.password = "mock_password"

@@ -79,7 +79,7 @@ class ChannelIndex(object):
 
         # From historic viewpoint channels might have moved and we should keep that in mind.
         moved_channels = {
-            ("channel.mtv.mtvnl", "mtvnl"): ("channel.nick.nickelodeon", "mtvnl")
+            ("channel.mtv.mtvnl", "mtvnl"): ("channel.nick.nickelodeon", "mtvnl"),
         }
 
         moved = moved_channels.get((channel_id, channel_code))
