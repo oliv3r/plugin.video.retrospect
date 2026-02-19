@@ -67,7 +67,7 @@
     <category id="channelsettings" label="30032">
         <setting type="lsep" label="30063" />
         <!-- start of active channels -->
-        <setting id="config_channel" type="select" label="30040" values="NPO Start|Videoland|Kijk.nl|GoPlay|Vier|Vijf|Zes|Zeven|VTM.be|Stievie|VRT NU|SVT Play|UR Play|TV4 Play" />
+        <setting id="config_channel" type="select" label="30040" values="NPO Start|Videoland|Kijk.nl|GoPlay|Vier|Vijf|Zes|Zeven|VTM.be|Stievie|VRT NU|SVT Play|UR Play|TV4 Play|NLZIET" />
         <!-- end of active channels -->
 
         <setting type="lsep" label="30032" />
@@ -109,6 +109,13 @@
         <setting id="mediaan_password" default="" visible="eq(-26,Stievie)|eq(-26,VTM.be)" />
         <setting id="mediaan_password_set" label="30093" type="action" action="RunScript(plugin.video.retrospect, 0, ?action=encryptsetting&amp;settingid=mediaan_password&amp;settingname=Mediaan Wachtwoord.be&amp;tabfocus=102)" option="close" visible="eq(-27,Stievie)|eq(-27,VTM.be)" />
         <setting id="mediaan_signature" default="" visible="eq(-28,Stievie)|eq(-28,VTM.be)" />
+        <!-- chn_nlziet.py -->
+        <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_select_profile" label="30625" type="action" action="RunScript(plugin.video.retrospect, 0, ?channel=channel.nl.nlziet&amp;action=execute&amp;command=select_profile)" option="close" visible="eq(-29,NLZIET)" />
+        <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_device_setup" label="30610" type="action" action="RunScript(plugin.video.retrospect, 0, ?channel=channel.nl.nlziet&amp;action=execute&amp;command=setup_device)" option="close" visible="eq(-30,NLZIET)" />
+        <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_username" type="text" label="30035" default="" visible="eq(-31,NLZIET)" />
+        <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_password" default="" visible="eq(-32,NLZIET)" />
+        <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_password_set" label="30093" type="action" action="RunScript(plugin.video.retrospect, 0, ?channel=channel.nl.nlziet&amp;action=encryptsetting&amp;settingid=channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_password&amp;settingname=NLZIET&amp;tabfocus=102)" option="close" visible="eq(-33,NLZIET)" />
+        <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_log_off" label="30611" type="action" action="RunScript(plugin.video.retrospect, 0, ?channel=channel.nl.nlziet&amp;action=execute&amp;command=log_off)" option="close" visible="eq(-34,NLZIET)" />
         <!-- end of channel settings -->
     </category>
 

@@ -158,6 +158,19 @@ class LanguageHelper(object):
     CleanupCache = 30604
     CleanupConfirmation = 30605
 
+    LogOut = 30611
+    DeviceSetupTitle = 30612
+    DeviceSetupVisit = 30614
+    DeviceSetupEnterCode = 30616
+    Cancel = 30617
+    ManualLogin = 30618
+    DeviceSetupTimeout = 30619
+    DeviceSetupFailed = 30620
+    WelcomeUser = 30621
+    SelectProfile = 30622
+    SwitchProfile = 30625
+    LoginFirst = 30626
+
     Today = 30551
     Yesterday = 30552
     DayBeforeYesterday = 30553
