@@ -638,3 +638,99 @@ class TestNLZIETAuthIntegration(unittest.TestCase):
                         Logger.warning(f"Cleanup: Could not find device key for '{created_device_name}'")
             else:
                 Logger.warning("Cleanup: Could not get mijn-nlziet token for device removal")
+
+# ============================================================================
+# Mocked Test Class — runs all tests against mock API responses
+# ============================================================================
+
+
+class TestNLZIETAuthMocked(TestNLZIETAuthIntegration):
+    """Runs all NLZiet auth tests against mocked API responses.
+
+    Inherits all test methods from TestNLZIETAuthIntegration. Overrides
+    setUpClass to inject mock UriHandler.open() instead of requiring real
+    credentials. This class always runs, even without NLZIET_USERNAME/PASSWORD.
+    """
+
+    _mock_dispatcher = None
+    _original_open = None
+
+    @classmethod
+    def setUpClass(cls):
+        """Initialize with mock dispatcher instead of real credentials."""
+        from tests.authentication.nlziet_mocks import NLZietMockDispatcher
+
+        Logger.create_logger(None, str(cls), min_log_level=0)
+        UriHandler.create_uri_handler(ignore_ssl_errors=False)
+
+        from resources.lib.retroconfig import Config
+        if not os.path.exists(Config.profileDir):
+            os.makedirs(Config.profileDir, exist_ok=True)
+
+        cls.handler = NLZIETOAuth2Handler()
+
+        cls.username = "test@example.com"
+        cls.password = "mock_password"
+
+        cls._mock_dispatcher = NLZietMockDispatcher()
+        cls._original_open = UriHandler.instance().open
+
+        uri_handler_instance = UriHandler.instance()
+
+        def mock_open(uri, proxy=None, params=None, data=None, json=None,
+                      referer=None, additional_headers=None, no_cache=False,
+                      force_text=False, force_cache_duration=None, method=""):
+            return cls._mock_dispatcher.dispatch(
+                uri, uri_handler_instance,
+                params=params, data=data, json=json, method=method,
+                additional_headers=additional_headers
+            )
+
+        uri_handler_instance.open = mock_open
+
+    @classmethod
+    def tearDownClass(cls):
+        """Restore original UriHandler.open and clean up."""
+        if cls._original_open:
+            UriHandler.instance().open = cls._original_open
+        super().tearDownClass()
+
+    def setUp(self):
+        """Reset mock state and clean cookies between tests."""
+        if self._mock_dispatcher:
+            self._mock_dispatcher.reset()
+        UriHandler.delete_cookie(domain=".nlziet.nl")
+
+    # Override to bypass parent's @skipIf — mock tests always run
+    def test_15_device_flow_authentication(self):
+        self._run_device_flow_authentication()
+
+    def test_16_device_flow_refresh_token(self):
+        self._run_device_flow_refresh_token()
+
+    def test_refresh_no_tokens_raises_value_error(self):
+        """refresh_access_token raises ValueError when no refresh or id token is stored."""
+        AddonSettings.set_setting(f"{self.handler.prefix}refresh_token", "", store=LOCAL)
+        AddonSettings.set_setting(f"{self.handler.prefix}id_token", "", store=LOCAL)
+        with self.assertRaises(ValueError):
+            self.handler.refresh_access_token()
+
+    def test_set_profile_exchanges_token(self):
+        """set_profile performs a token exchange and stores a profile-scoped token."""
+        from tests.authentication.nlziet_mocks import (
+            MOCK_ACCESS_TOKEN, MOCK_PROFILE_ACCESS_TOKEN, MOCK_PROFILE_LIST)
+        # Ensure we have a valid session first.
+        if not self.handler.get_valid_token():
+            self.handler.log_on(self.username, self.password)
+
+        token_before = self.handler.get_valid_token()
+        self.assertIsNotNone(token_before)
+
+        profile_id = MOCK_PROFILE_LIST[1]["id"]  # Kids profile
+        success = self.handler.set_profile(profile_id)
+        self.assertTrue(success)
+
+        token_after = self.handler.get_valid_token()
+        self.assertEqual(token_after, MOCK_PROFILE_ACCESS_TOKEN)
+        self.assertNotEqual(token_after, MOCK_ACCESS_TOKEN)
+        self.assertEqual(self.handler.profile_type, "ChildYoung")
