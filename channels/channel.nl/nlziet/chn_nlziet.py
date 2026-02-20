@@ -8,7 +8,7 @@ import xbmc
 from resources.lib import chn_class
 from resources.lib.authentication.authenticator import Authenticator
 from resources.lib.authentication.nlzietoauth2handler import NLZIETOAuth2Handler
-from resources.lib.deviceauthdialog import DeviceAuthDialog
+from resources.lib.deviceauthdialog import DeviceAuthDialog, generate_qr_image
 from resources.lib.helpers.languagehelper import LanguageHelper
 from resources.lib.logger import Logger
 from resources.lib.xbmcwrapper import XbmcWrapper
@@ -125,7 +125,12 @@ class Channel(chn_class.Channel):
                 XbmcWrapper.show_dialog("NLZIET", msg)
                 return False
 
-            result = self.__poll_with_progress(flow)
+            from urllib.parse import quote
+            qr_url = "https://id.nlziet.nl/device?code={}&name={}".format(
+                quote(flow["user_code"]), quote(device_name))
+            qr_path = generate_qr_image(qr_url)
+
+            result = self.__poll_with_progress(flow, qr_path)
             if result == "success":
                 return True
             if result == "cancelled":
@@ -137,10 +142,11 @@ class Channel(chn_class.Channel):
             if not XbmcWrapper.show_yes_no("NLZIET", timeout_msg):
                 return False
 
-    def __poll_with_progress(self, flow: dict) -> str:
+    def __poll_with_progress(self, flow: dict, qr_path: str) -> str:
         """Poll device flow with a progress dialog.
 
         :param flow: The device flow response from start_device_flow()
+        :param qr_path: Path to the generated QR code image.
         :return: "success", "cancelled", "manual", or "timeout"
         """
 
@@ -151,14 +157,16 @@ class Channel(chn_class.Channel):
         expires_in = flow.get("expires_in", 900)
 
         title = LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupTitle)
+        qr_instr = LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupQrInstruction)
         visit_text = LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupVisit)
         enter_code = LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupEnterCode)
         cancel_lbl = LanguageHelper.get_localized_string(LanguageHelper.Cancel)
         manual_lbl = LanguageHelper.get_localized_string(LanguageHelper.ManualLogin)
 
         dialog = DeviceAuthDialog(
-            title, visit_text, verification_uri, enter_code,
-            user_code, expires_in, cancel_lbl, manual_label=manual_lbl)
+            title, qr_instr, visit_text, verification_uri, enter_code,
+            user_code, expires_in, cancel_lbl, manual_label=manual_lbl,
+            qr_image_path=qr_path)
         dialog.show()
 
         monitor = xbmc.Monitor()

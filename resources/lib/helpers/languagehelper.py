@@ -160,6 +160,7 @@ class LanguageHelper(object):
 
     LogOut = 30611
     DeviceSetupTitle = 30612
+    DeviceSetupQrInstruction = 30613
     DeviceSetupVisit = 30614
     DeviceSetupEnterCode = 30616
     Cancel = 30617

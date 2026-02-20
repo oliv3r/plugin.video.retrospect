@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Device flow authentication dialog with progress bar."""
+"""Device flow authentication dialog with progress bar and optional QR code."""
 
 import os
 import struct
@@ -20,6 +20,7 @@ _DLG_W = 700
 _DLG_H = 400
 _DLG_X = (1280 - _DLG_W) // 2
 _DLG_Y = (720 - _DLG_H) // 2
+_QR_SIZE = 200
 _MARGIN = 25
 _ALIGN_CENTER = 0x00000002 | 0x00000004
 
@@ -54,20 +55,46 @@ def _ensure_bg_texture():
     return path
 
 
+def generate_qr_image(url):
+    """Generate a QR code PNG and return the file path.
+
+    The image is written to the addon's cache directory so it doesn't
+    pollute the shared Kodi temp folder.
+
+    :param str url:  URL to encode.
+    :return:         Absolute path to the generated PNG, or None on failure.
+    :rtype:          str | None
+    """
+
+    from resources.lib.retroconfig import Config
+    cache_dir = Config.cacheDir
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, "qr.png")
+    try:
+        from resources.lib.qrcode import make
+        img = make(url)
+        img.save(path)
+        return path
+    except Exception:
+        Logger.error("Failed to generate QR code", exc_info=True)
+        return None
+
+
 class DeviceAuthDialog(xbmcgui.WindowDialog):
-    """Device flow dialog with URL, code, and countdown.
+    """Device flow dialog with URL, code, countdown, and optional QR code.
 
     All user-visible text is supplied via constructor parameters so callers
     can pass localized strings.  The dialog reports which button was pressed
     via the ``cancelled`` and ``manual_login`` properties.
     """
 
-    def __init__(self, title, visit_text, verification_uri,
+    def __init__(self, title, qr_instruction, visit_text, verification_uri,
                  enter_code_text, user_code, expires_in, cancel_label,
-                 manual_label=None):
+                 manual_label=None, qr_image_path=None):
         """Create the dialog.
 
         :param str title:            Dialog title.
+        :param str qr_instruction:   Text shown when QR is present (e.g. "Scan this QR code...").
         :param str visit_text:       Instruction text above the URL.
         :param str verification_uri: URL to display.
         :param str enter_code_text:  Text above the user code.
@@ -75,14 +102,15 @@ class DeviceAuthDialog(xbmcgui.WindowDialog):
         :param int expires_in:       Seconds until the code expires.
         :param str cancel_label:     Label for the cancel button.
         :param str|None manual_label: Label for the manual-login button (omit to hide).
+        :param str|None qr_image_path: Path to QR PNG (omit for text-only layout).
         """
 
         super().__init__()
         self._cancelled = False
         self._manual = False
-        self._build_ui(title, visit_text, verification_uri,
-                       enter_code_text, user_code, expires_in,
-                       cancel_label, manual_label)
+        self._build_ui(title, qr_instruction, visit_text, verification_uri,
+                       enter_code_text, user_code, expires_in, cancel_label,
+                       manual_label, qr_image_path)
 
     # -- UI construction ---------------------------------------------------
 
@@ -91,12 +119,13 @@ class DeviceAuthDialog(xbmcgui.WindowDialog):
         self.addControl(label)
         return label
 
-    def _build_ui(self, title, visit_text, verification_uri,
-                  enter_code_text, user_code, expires_in,
-                  cancel_label, manual_label):
+    def _build_ui(self, title, qr_instruction, visit_text, verification_uri,
+                  enter_code_text, user_code, expires_in, cancel_label,
+                  manual_label, qr_image_path):
         bg_path = _ensure_bg_texture()
         left_x = _DLG_X + _MARGIN
-        text_w = _DLG_W - _MARGIN * 2
+        has_qr = qr_image_path and os.path.exists(qr_image_path)
+        text_w = (_DLG_W - _QR_SIZE - _MARGIN * 3) if has_qr else (_DLG_W - _MARGIN * 2)
 
         # Full-screen dim overlay
         overlay = xbmcgui.ControlImage(0, 0, 1280, 720, bg_path,
@@ -114,8 +143,15 @@ class DeviceAuthDialog(xbmcgui.WindowDialog):
 
         # Instructions
         y = _DLG_Y + 55
-        self._add_label(left_x, y, text_w, 22,
-                        visit_text, textColor=_COLOR_TEXT_DIM)
+        if has_qr:
+            self._add_label(left_x, y, text_w, 22,
+                            qr_instruction, textColor=_COLOR_TEXT_DIM)
+            y += 35
+            self._add_label(left_x, y, text_w, 22,
+                            visit_text, textColor=_COLOR_TEXT_DIM)
+        else:
+            self._add_label(left_x, y, text_w, 22,
+                            visit_text, textColor=_COLOR_TEXT_DIM)
 
         y += 28
         self._add_label(left_x, y, text_w, 26,
@@ -128,6 +164,14 @@ class DeviceAuthDialog(xbmcgui.WindowDialog):
         y += 28
         self._add_label(left_x, y, text_w, 35,
                         user_code, font="font14", textColor=_COLOR_TEXT)
+
+        # QR code image (right column)
+        if has_qr:
+            qr_x = _DLG_X + _DLG_W - _QR_SIZE - _MARGIN
+            qr_y = _DLG_Y + 55
+            qr = xbmcgui.ControlImage(qr_x, qr_y, _QR_SIZE, _QR_SIZE,
+                                      qr_image_path)
+            self.addControl(qr)
 
         # Progress bar
         bar_y = _DLG_Y + _DLG_H - 70
