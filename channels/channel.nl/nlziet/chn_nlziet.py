@@ -1,17 +1,41 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """NLZiet channel for Retrospect."""
 
+import re
 import time
+from typing import Optional, List, Tuple, Union
 
 import xbmc
 
 from resources.lib import chn_class
+from resources.lib import contenttype
+from resources.lib import mediatype
 from resources.lib.authentication.authenticator import Authenticator
 from resources.lib.authentication.nlzietoauth2handler import NLZIETOAuth2Handler
 from resources.lib.deviceauthdialog import DeviceAuthDialog, generate_qr_image
+from resources.lib.helpers.jsonhelper import JsonHelper
 from resources.lib.helpers.languagehelper import LanguageHelper
 from resources.lib.logger import Logger
+from resources.lib.mediaitem import MediaItem, FolderItem
+from resources.lib.streams.mpd import Mpd
+from resources.lib.urihandler import UriHandler
 from resources.lib.xbmcwrapper import XbmcWrapper
+
+from api import (
+    API_V7_CONTINUE_WATCHING,
+    API_V8_PROFILE, API_V8_RECOMMEND,
+    API_V8_SERIES, API_V8_SERIES_PREFIX, API_V8_TRACKED_SERIES,
+    API_V9_CONTINUE_WATCHING,
+    API_V9_EPG_LIVE_CHANNEL, API_V9_EPG_DATE, API_V9_EPG_LIVE,
+    API_V9_PLACEMENT_EXPLORE_PREFIX, API_V9_LIVE_HANDSHAKE,
+    API_V9_PLACEMENT,
+    API_V9_RECOMMEND_WITH, API_V9_RECOMMEND_FILTERED,
+    API_V9_SEARCH, API_V9_SEARCH_PREFIX,
+    API_V9_SERIES_EPISODES, API_V9_SERIES_PLAY, API_V9_SERIES_PREFIX,
+    API_V9_SERIES_SEASON_EPISODES,
+    API_V9_STREAM_HANDSHAKE, API_V9_TRACKED_SERIES,
+    API_V9_VOD_HANDSHAKE, API_V9_WATCH_IN_ADVANCE,
+)
 
 
 class Channel(chn_class.Channel):
@@ -28,11 +52,114 @@ class Channel(chn_class.Channel):
         chn_class.Channel.__init__(self, channel_info)
 
         self.noImage = channel_info.icon
-
-        self._add_data_parser("", requires_logon=True)
+        self.mainListUri = "#mainlist"
+        self.baseUrl = "https://api.nlziet.nl"
+        self.__register_parsers()
 
         self.__handler = NLZIETOAuth2Handler()
         self.__authenticator = Authenticator(self.__handler)
+
+    def __register_parsers(self):
+        """Register URL data parsers for all supported API endpoints."""
+
+        self._add_data_parser("#mainlist",
+                              preprocessor=self.get_initial_folder_items,
+                              requires_logon=True)
+
+        self._add_data_parser(API_V9_PLACEMENT_EXPLORE_PREFIX,
+                              name="Explore category page",
+                              preprocessor=self.get_explore_items,
+                              requires_logon=True)
+
+        self._add_data_parser(API_V9_EPG_LIVE,
+                              name="Live TV channels", json=True,
+                              requires_logon=True,
+                              parser=["data"],
+                              creator=self.create_live_channel_item,
+                              updater=self.update_live_item)
+
+        self._add_data_parser(API_V9_RECOMMEND_WITH,
+                              name="VOD content list (v9)", json=True,
+                              requires_logon=True,
+                              parser=["data"],
+                              creator=self.create_vod_item,
+                              updater=self.update_vod_item)
+
+        self._add_data_parser(API_V9_RECOMMEND_FILTERED,
+                              name="Genre-filtered content", json=True,
+                              requires_logon=True,
+                              parser=["data"],
+                              creator=self.create_vod_item,
+                              updater=self.update_vod_item)
+
+        self._add_data_parser(API_V8_RECOMMEND,
+                              name="VOD content list", json=True,
+                              requires_logon=True,
+                              parser=["data"],
+                              creator=self.create_vod_item,
+                              updater=self.update_vod_item)
+
+        self._add_data_parser(API_V9_TRACKED_SERIES,
+                              name="Watchlist (v9)", json=True,
+                              requires_logon=True,
+                              parser=["data"],
+                              creator=self.create_vod_item,
+                              updater=self.update_vod_item)
+
+        self._add_data_parser(API_V8_TRACKED_SERIES,
+                              name="Watchlist", json=True,
+                              requires_logon=True,
+                              parser=[],
+                              creator=self.create_vod_item,
+                              updater=self.update_vod_item)
+
+        self._add_data_parser(API_V9_CONTINUE_WATCHING,
+                              name="Continue watching (v9)", json=True,
+                              requires_logon=True,
+                              parser=["data"],
+                              creator=self.create_vod_item,
+                              updater=self.update_vod_item)
+
+        self._add_data_parser(API_V7_CONTINUE_WATCHING,
+                              name="Continue watching", json=True,
+                              requires_logon=True,
+                              parser=[],
+                              creator=self.create_vod_item,
+                              updater=self.update_vod_item)
+
+        self._add_data_parser(API_V9_WATCH_IN_ADVANCE,
+                              name="Watch in advance", json=True,
+                              requires_logon=True,
+                              parser=["data"],
+                              creator=self.create_vod_item,
+                              updater=self.update_vod_item)
+
+        self._add_data_parser(API_V8_SERIES_PREFIX,
+                              name="Series detail (v8)", json=True,
+                              requires_logon=True,
+                              preprocessor=self.extract_series_data)
+
+        self._add_data_parser(API_V9_SERIES_PREFIX,
+                              name="Series episodes (v9)", json=True,
+                              requires_logon=True,
+                              parser=["data"],
+                              creator=self.create_episode_item,
+                              postprocessor=self.deduplicate_episode_titles,
+                              updater=self.update_vod_item)
+
+        self._add_data_parser(API_V9_SEARCH_PREFIX,
+                              name="Search results", json=True,
+                              requires_logon=True,
+                              parser=["data"],
+                              creator=self.create_search_result_item,
+                              updater=self.update_vod_item)
+
+        self._add_data_parser(API_V9_STREAM_HANDSHAKE,
+                              name="VOD stream resolver",
+                              requires_logon=True,
+                              updater=self.update_vod_item)
+
+    # -- Authentication ----------------------------------------------------
 
     def log_on(self, username=None, password=None) -> bool:
         if self.loggedOn:
@@ -40,7 +167,10 @@ class Channel(chn_class.Channel):
 
         result = self.__handler.active_authentication()
         if result.logged_on:
+            if not self.__validate_token():
+                return False
             self.loggedOn = True
+            self.__set_auth_headers()
             self.__select_profile_if_needed()
             self.__set_auth_headers()
             return True
@@ -61,9 +191,701 @@ class Channel(chn_class.Channel):
                 return False
 
         self.loggedOn = True
+        self.__set_auth_headers()
         self.__welcome_and_select_profile()
         self.__set_auth_headers()
         return True
+
+    def __validate_token(self) -> bool:
+        """Validate the current token against the NLZiet API.
+
+        :return: True if the token is valid, False otherwise.
+        """
+
+        token = self.__handler.get_valid_token()
+        if not token:
+            msg = LanguageHelper.get_localized_string(LanguageHelper.SessionExpired)
+            XbmcWrapper.show_dialog("NLZIET", msg)
+            return False
+
+        headers = {
+            "Authorization": "Bearer {}".format(token),
+            "Accept": "application/json"
+        }
+        try:
+            response = UriHandler.open(API_V8_PROFILE,
+                                       additional_headers=headers, no_cache=True)
+            status = UriHandler.instance().status
+            if status.error:
+                if status.code in (401, 403):
+                    msg = LanguageHelper.get_localized_string(LanguageHelper.SessionExpired)
+                    XbmcWrapper.show_dialog("NLZIET", msg)
+                else:
+                    msg = LanguageHelper.get_localized_string(LanguageHelper.ConnectionError)
+                    XbmcWrapper.show_dialog("NLZIET", msg)
+                return False
+        except Exception:
+            Logger.error("NLZIET: Token validation failed", exc_info=True)
+            msg = LanguageHelper.get_localized_string(LanguageHelper.ConnectionError)
+            XbmcWrapper.show_dialog("NLZIET", msg)
+            return False
+
+        return True
+
+    def __set_auth_headers(self):
+        """Set the Bearer token and required app headers for API requests."""
+
+        token = self.__handler.get_valid_token()
+        if token:
+            self.httpHeaders["Authorization"] = "Bearer {}".format(token)
+        self.httpHeaders["Nlziet-AppName"] = "WebApp"
+        self.httpHeaders["Nlziet-AppVersion"] = "5.65.5"
+
+    # -- Main list ---------------------------------------------------------
+
+    def get_initial_folder_items(self, data):
+        """Create the initial folder items by fetching placement rows.
+
+        Fetches ``/v9/placement/rows/home`` for adult profiles or
+        ``/v9/placement/rows/kids-home`` for kids profiles and creates
+        folder items from the returned components.
+
+        :param str data: The retrieve data that was loaded for the current item and URL.
+        :return: A tuple of the data and a list of MediaItems that were generated.
+        :rtype: tuple[str|JsonHelper,list[MediaItem]]
+
+        """
+
+        items = []
+
+        if not self.loggedOn:
+            return data, items
+
+        page = "kids-home" if self.__handler.profile_type == "ChildYoung" else "home"
+        placement_url = API_V9_PLACEMENT.format(page)
+        Logger.debug("NLZIET: Fetching placement rows from %s", placement_url)
+
+        placement_data = UriHandler.open(
+            placement_url, additional_headers=self.httpHeaders, no_cache=True)
+        if not placement_data:
+            Logger.warning("NLZIET: Empty placement response, falling back to search only")
+            return data, items
+
+        search = FolderItem(LanguageHelper.get_localized_string(LanguageHelper.Search),
+                             self.search_url, content_type=contenttype.TVSHOWS)
+        search.complete = True
+        search.dontGroup = True
+        items.append(search)
+
+        placement = JsonHelper(placement_data)
+        components = placement.get_value("components") or []
+
+        for component in components:
+            result = self.__create_placement_item(component)
+            if isinstance(result, list):
+                items.extend(result)
+            elif result:
+                items.append(result)
+
+        return data, items
+
+    def get_explore_items(self, data):
+        """Create folder items for an explore category page.
+
+        Fetches a placement page (e.g. ``explore-series``) and turns each
+        ``ItemTileList`` component into a navigable genre folder.
+
+        :param str data: The retrieve data that was loaded for the current item and URL.
+        :return: A tuple of the data and a list of MediaItems that were generated.
+        :rtype: tuple[str|JsonHelper,list[MediaItem]]
+
+        """
+
+        items = []
+        if not data:
+            return data, items
+
+        placement = JsonHelper(data)
+        components = placement.get_value("components") or []
+
+        for component in components:
+            result = self.__create_placement_item(component)
+            if isinstance(result, list):
+                items.extend(result)
+            elif result:
+                items.append(result)
+
+        return data, items
+
+    _PLACEMENT_TYPES = {"ItemTileList", "ItemTileListWithFolder",
+                        "PersonalizedProgramLocationsLive"}
+
+    def __create_placement_item(self, component):
+        """Create a FolderItem from a placement row component.
+
+        Handles ``Placements`` components by expanding their sub-items into
+        individual explore-page folders.
+
+        :param dict component: A single component from the placement response.
+        :return: A FolderItem, a list of FolderItems, or None.
+        :rtype: FolderItem|list[FolderItem]|None
+
+        """
+
+        comp_type = component.get("type", "")
+
+        if comp_type == "Placements":
+            return self.__create_explore_items(component.get("items", []))
+        url = component.get("url") or component.get("parameters", {}).get("url")
+        title = component.get("title") or component.get("parameters", {}).get("title")
+        if comp_type not in self._PLACEMENT_TYPES or not url or not title:
+            return None
+
+        item = FolderItem(title, url, content_type=contenttype.VIDEOS)
+        if comp_type == "PersonalizedProgramLocationsLive":
+            item.isLive = True
+            item.dontGroup = True
+        item.complete = True
+        item.HttpHeaders = self.httpHeaders
+        return item
+
+    def __create_explore_items(self, placement_items):
+        """Create folder items for each explore category.
+
+        :param list placement_items: Items from a Placements component.
+        :return: A list of FolderItems for explore pages.
+        :rtype: list[FolderItem]
+
+        """
+
+        items = []
+        for entry in placement_items:
+            entry_id = entry.get("id")
+            title = entry.get("title")
+            if not entry_id or not title:
+                continue
+            url = API_V9_PLACEMENT.format(entry_id)
+            item = FolderItem(title, url, content_type=contenttype.TVSHOWS)
+            item.dontGroup = True
+            item.complete = True
+            item.HttpHeaders = self.httpHeaders
+            items.append(item)
+        return items
+
+    # -- Live TV channels --------------------------------------------------
+
+    def create_live_channel_item(self, result_set: dict) -> Optional[MediaItem]:
+        """Create a MediaItem for a live TV channel.
+
+        :param dict result_set: A single entry from the ``data`` array of the
+            ``/v9/epg/programlocations/live`` response.
+        :return: A playable MediaItem or None.
+
+        """
+
+        channel = result_set.get("channel")
+        if not channel:
+            return None
+
+        content = channel.get("content", {})
+        channel_id = content.get("id")
+        title = content.get("title", "")
+        if not channel_id or not title:
+            return None
+
+        # The item URL encodes the channel ID so the updater can find the
+        # correct assetId at playback time.
+        url = API_V9_EPG_LIVE_CHANNEL.format(channel_id)
+
+        item = MediaItem(title, url, media_type=mediatype.VIDEO)
+        item.isLive = True
+        item.isGeoLocked = True
+        item.isDrmProtected = True
+        item.complete = False
+
+        logo = content.get("logo", {})
+        logo_url = logo.get("normalUrl")
+        if logo_url:
+            item.thumb = logo_url
+            item.icon = logo_url
+
+        # Store the current program's assetId for direct playback if available.
+        program_locations = result_set.get("programLocations", [])
+        if program_locations:
+            first_program = program_locations[0].get("content", {})
+            asset_id = first_program.get("assetId")
+            if asset_id:
+                item.metaData["asset_id"] = asset_id
+
+            # Add current program info if available.
+            program_title = first_program.get("title", "")
+            if program_title:
+                item.description = program_title
+
+        if channel.get("missingSubscriptionFeature") is not None:
+            item.isPaid = True
+
+        item.HttpHeaders = self.httpHeaders
+        return item
+
+    def update_live_item(self, item: MediaItem) -> MediaItem:
+        """Fetch the DASH stream URL for a live channel.
+
+        :param MediaItem item: The item to update with stream info.
+        :return: The updated item.
+
+        """
+
+        Logger.debug("Updating live stream for: %s", item.name)
+
+        channel_id = item.url.rsplit("channel=", 1)[-1] if "channel=" in item.url else ""
+        if not channel_id:
+            Logger.error("No channel ID in URL for: %s", item.name)
+            return item
+
+        handshake_url = API_V9_LIVE_HANDSHAKE.format(channel_id)
+
+        return self.__handle_stream_handshake(
+            item, handshake_url, manifest_update="full")
+
+    # -- VOD content (movies, series, trending) ----------------------------
+
+    def create_vod_item(self, result_set: dict) -> Optional[MediaItem]:
+        """Create an item from a ``/v8/recommend/*`` or watchlist response.
+
+        Items without a ``type`` field (the ``/v8/recommend/series`` endpoint)
+        are treated as series folders.  Items tagged ``"Movie"`` become
+        playable movie items.  Everything else (``Vod``, ``Epg``) becomes a
+        playable video item.
+
+        :param dict result_set: A single ``data[]`` entry (contains ``content``).
+        :return: A MediaItem, FolderItem, or None.
+
+        """
+
+        content = result_set.get("content", {})
+        if not content:
+            return None
+
+        # Skip items explicitly marked as unavailable.
+        if content.get("isAvailable") is False:
+            return None
+
+        item_id = content.get("id")
+        title = content.get("title", "")
+        if not item_id or not title:
+            return None
+
+        item_type = content.get("type")
+        tags = content.get("tags") or []
+        is_movie = "Movie" in tags
+
+        if item_type is None or item_type == "Series":
+            url = API_V8_SERIES.format(item_id)
+            item = FolderItem(title, url, content_type=contenttype.EPISODES)
+            item.complete = True
+            item.dontGroup = True
+        elif is_movie:
+            url = self.__vod_handshake_url(item_id)
+            item = MediaItem(title, url, media_type=mediatype.MOVIE)
+            item.isDrmProtected = True
+            item.isGeoLocked = True
+            item.dontGroup = True
+        else:
+            url = self.__vod_handshake_url(item_id)
+            item = MediaItem(title, url, media_type=mediatype.EPISODE)
+            item.isDrmProtected = True
+            item.isGeoLocked = True
+            item.dontGroup = True
+
+        # Trending/recommended items can carry episode numbering.
+        numbering = content.get("formattedEpisodeNumbering") or ""
+        if numbering:
+            match = re.match(r"S(\d+):A(\d+)", numbering)
+            if match:
+                item.set_season_info(match.group(1), match.group(2))
+
+        self.__set_vod_metadata(item, content)
+        item.HttpHeaders = self.httpHeaders
+        return item
+
+    def create_episode_item(self, result_set: dict) -> Optional[MediaItem]:
+        """Create a playable item from a ``/v9/series/{id}/episodes`` entry.
+
+        :param dict result_set: A single ``data[]`` entry.
+        :return: A playable MediaItem or None.
+
+        """
+
+        content = result_set.get("content", {})
+        if not content:
+            return None
+
+        item_id = content.get("id")
+        title = content.get("title") or content.get("subtitle", "")
+        if not item_id or not title:
+            return None
+
+        url = self.__vod_handshake_url(item_id)
+        item = MediaItem(title, url, media_type=mediatype.EPISODE)
+        item.isDrmProtected = True
+        item.isGeoLocked = True
+        item.dontGroup = True
+
+        subtitle = content.get("subtitle", "")
+        # Episode numbering is embedded in the subtitle (e.g. "S1:A6 Title").
+        numbering = content.get("formattedEpisodeNumbering") or ""
+        match = re.match(r"S(\d+):A(\d+)", numbering or subtitle)
+        if match:
+            item.set_season_info(match.group(1), match.group(2))
+            # Strip numbering prefix from subtitle for display.
+            clean = re.sub(r"^S\d+:A\d+\s*", "", subtitle)
+            if clean and clean != title:
+                item.metaData["nlziet:subtitle"] = clean
+        elif subtitle and subtitle != title:
+            item.metaData["nlziet:subtitle"] = subtitle
+
+        self.__set_vod_metadata(item, content)
+        item.HttpHeaders = self.httpHeaders
+        return item
+
+    def deduplicate_episode_titles(self, data, items):
+        """Disambiguate duplicate episode titles using subtitles.
+
+        When all episodes share the same title (common for kids shows), each
+        title is replaced by its subtitle.  When only some titles are
+        duplicated (2+), those get ``subtitle (title)`` format while unique
+        titles are left untouched.
+
+        :param data:             Unused (required by post-processor signature).
+        :param list[MediaItem] items: The items produced by the parser/creator.
+        :return: The (potentially modified) list of items.
+        :rtype: list[MediaItem]
+
+        """
+
+        episodes = [i for i in items if not i.is_folder]
+        if len(episodes) < 2:
+            return items
+
+        from collections import Counter
+        counts = Counter(e.name for e in episodes)
+        unique_titles = len(counts)
+
+        if unique_titles == 1:
+            # All identical — use "subtitle (title)" to preserve context.
+            for episode in episodes:
+                subtitle = episode.metaData.get("nlziet:subtitle")
+                if subtitle:
+                    episode.name = "{} ({})".format(subtitle, episode.name)
+        elif any(c >= 2 for c in counts.values()):
+            # Partial duplicates — "subtitle (title)" for duplicated ones.
+            for episode in episodes:
+                if counts[episode.name] >= 2:
+                    subtitle = episode.metaData.get("nlziet:subtitle")
+                    if subtitle:
+                        episode.name = "{} ({})".format(subtitle, episode.name)
+
+        return items
+
+    def create_search_result_item(self, result_set: dict) -> Optional[MediaItem]:
+        """Create an item from a ``/v9/search`` response entry.
+
+        The search response uses ``type`` values ``"Movie"`` and ``"Series"``
+        (different from the recommend endpoints).
+
+        :param dict result_set: A single ``data[]`` entry.
+        :return: A MediaItem, FolderItem, or None.
+
+        """
+
+        content = result_set.get("content", {})
+        if not content:
+            Logger.debug("NLZIET search: skipping entry with empty content")
+            return None
+
+        item_id = content.get("id")
+        title = content.get("title", "")
+        item_type = content.get("type", "")
+        if not item_id or not title:
+            Logger.debug("NLZIET search: skipping entry without id/title: "
+                        "id=%s, title=%s, type=%s", item_id, title, item_type)
+            return None
+
+        Logger.debug("NLZIET search result: id=%s, title='%s', type='%s'",
+                     item_id, title, item_type)
+        tags = content.get("tags") or []
+
+        if item_type == "Series" or item_type is None:
+            url = API_V8_SERIES.format(item_id)
+            item = FolderItem(title, url, content_type=contenttype.EPISODES)
+            item.complete = True
+            item.dontGroup = True
+        elif item_type == "Movie" or "Movie" in tags:
+            url = self.__vod_handshake_url(item_id)
+            item = MediaItem(title, url, media_type=mediatype.MOVIE)
+            item.isDrmProtected = True
+            item.isGeoLocked = True
+            item.dontGroup = True
+        else:
+            url = self.__vod_handshake_url(item_id)
+            item = MediaItem(title, url, media_type=mediatype.EPISODE)
+            item.isDrmProtected = True
+            item.isGeoLocked = True
+            item.dontGroup = True
+
+        self.__set_vod_metadata(item, content)
+        item.HttpHeaders = self.httpHeaders
+        return item
+
+    def extract_series_data(self, data):
+        """Preprocessor for ``/v8/series/{id}`` detail URLs.
+
+        Parses the season list from the series detail response and returns
+        them as folder items pointing to ``/v9/series/{id}/episodes?`` URLs.
+        The downstream parser is skipped because the data is replaced with
+        an empty string.
+
+        Shortcut items (Continue Watching, Most Recent Episode, First Episode)
+        are prepended before the season folders so users can jump straight to
+        an episode without drilling into seasons.
+
+        :param str data: Raw JSON response.
+        :return: Tuple of (data, items).
+        :rtype: tuple[str, list[MediaItem]]
+
+        """
+
+        # Series detail — extract seasons.
+        json_data = JsonHelper(data)
+        # The API may return {"content": {...}} or {"data": {"content": {...}}}.
+        series_content = json_data.get_value("content", fallback=None)
+        if not series_content:
+            series_content = json_data.get_value("data", "content", fallback={})
+        if not series_content:
+            return "", []
+
+        series_id = series_content.get("id", "")
+        series_title = series_content.get("title", "")
+        # API returns seasons newest-first; reverse so seasons[0] = oldest
+        # (used by shortcuts) and present newest-first to the user below.
+        seasons = list(reversed(series_content.get("seasons", [])))
+
+        items = []
+        if seasons:
+            # Present newest season first in the folder listing.
+            for season in reversed(seasons):
+                season_id = season.get("id")
+                season_title = season.get("title", "")
+                if not season_id:
+                    continue
+
+                url = API_V9_SERIES_SEASON_EPISODES.format(
+                    series_id, season_id)
+                folder = FolderItem(season_title or series_title, url,
+                                    content_type=contenttype.EPISODES)
+                folder.complete = True
+                items.append(folder)
+        else:
+            # Seasonless series — fetch episodes directly to avoid an
+            # intermediate folder that just duplicates the series name.
+            url = API_V9_SERIES_EPISODES.format(series_id)
+            episodes_item = MediaItem(series_title, url, media_type=mediatype.VIDEO)
+            episodes = self.process_folder_list(episodes_item)
+            items.extend(episodes)
+
+        # Return empty data so the parser does not run again.
+        return "", items
+
+    def update_vod_item(self, item: MediaItem) -> MediaItem:
+        """Fetch the DASH stream URL for a VOD or replay item.
+
+        :param MediaItem item: The item to update.
+        :return: The updated item.
+
+        """
+
+        Logger.debug("Updating VOD stream for: %s", item.name)
+        return self.__handle_stream_handshake(item, item.url)
+
+    def search_site(self, url=None, needle=None):
+        """Search the NLZiet catalogue.
+
+        :param str|None url:    Unused (search URL is constructed here).
+        :param str|None needle: The search query.
+        :return: A list of search result items.
+        :rtype: list[MediaItem]
+
+        """
+
+        Logger.debug("NLZIET search_site: needle=%r", needle)
+        Logger.debug("NLZIET search_site: url template=%s", API_V9_SEARCH)
+        items = chn_class.Channel.search_site(self, API_V9_SEARCH, needle)
+        Logger.debug("NLZIET search_site: returned %d items", len(items))
+        return items
+
+    @staticmethod
+    def __vod_handshake_url(content_id):
+        """Build a v9 stream handshake URL for on-demand playback.
+
+        :param str content_id: The content ID.
+        :return: The handshake URL.
+        :rtype: str
+
+        """
+
+        return API_V9_VOD_HANDSHAKE.format(content_id)
+
+    def __handle_stream_handshake(self, item, handshake_url,
+                                  manifest_update=None):
+        """Perform a v9 stream handshake and configure the item for playback.
+
+        :param MediaItem item:          The item to update.
+        :param str handshake_url:       The full handshake URL.
+        :param str|None manifest_update: If set, passed as manifest_update_params.
+        :return: The updated item.
+        :rtype: MediaItem
+
+        """
+
+        data = UriHandler.open(handshake_url, additional_headers=self.httpHeaders,
+                               no_cache=True)
+        if not data:
+            Logger.error("Empty handshake response for: %s", item.name)
+            return item
+
+        json_data = JsonHelper(data)
+
+        errors = json_data.get_value("errors", fallback=None)
+        if errors:
+            self.__handle_handshake_error(item, errors)
+            return item
+
+        mpd_url = json_data.get_value("manifestUrl", fallback=None)
+        if not mpd_url:
+            Logger.error("No stream URI in handshake for: %s", item.name)
+            return item
+
+        stream = item.add_stream(mpd_url, 0)
+
+        drm = json_data.get_value("drm", fallback={})
+        license_url = drm.get("licenseUrl") if drm else None
+        if license_url:
+            license_headers = drm.get("headers", {})
+            license_key = Mpd.get_license_key(
+                license_url, key_type="R", key_headers=license_headers)
+            kwargs = {"license_key": license_key}
+            if manifest_update:
+                kwargs["manifest_update_params"] = manifest_update
+            Mpd.set_input_stream_addon_input(stream, **kwargs)
+        else:
+            Mpd.set_input_stream_addon_input(stream)
+
+        item.complete = True
+        return item
+
+    @staticmethod
+    def __handle_handshake_error(item, errors):
+        """Log and handle errors from a stream handshake response.
+
+        :param MediaItem item: The item that failed.
+        :param errors: Error data from the API (list or dict).
+
+        """
+
+        if isinstance(errors, dict):
+            errors = [e for v in errors.values()
+                      for e in (v if isinstance(v, list) else [v])]
+        if not errors:
+            return
+
+        first = errors[0]
+        if isinstance(first, str):
+            Logger.error("Handshake error for %s: %s", item.name, first)
+            return
+
+        error_type = first.get("type", "")
+        error_msg = first.get("message", "")
+        Logger.error("Handshake error for %s: %s - %s",
+                     item.name, error_type, error_msg)
+
+        if error_type == "MaximumStreamsReached":
+            error_data = errors[0].get("data", {})
+            max_streams = str(error_data.get("maximumNumberOfStreams", "?"))
+            msg = LanguageHelper.get_localized_string(LanguageHelper.MaxStreamsReached)
+            msg = msg.replace("{0}", max_streams).replace("{1}", max_streams)
+            XbmcWrapper.show_dialog("NLZIET", msg)
+
+    def __set_vod_metadata(self, item, content):
+        """Set common metadata fields on a VOD item.
+
+        :param MediaItem item: The item to update.
+        :param dict content:   The ``content`` dict from the API response.
+
+        """
+
+        subtitle = content.get("subtitle", "")
+        description = content.get("description", "")
+        if subtitle and description and subtitle != description:
+            description = "[B]{}[/B]\n{}".format(subtitle, description)
+        elif not description:
+            description = subtitle
+        availability = content.get("formattedAvailabilityWindow", "")
+        if availability and description:
+            description = "{}\n\n{}".format(description, availability)
+        if description:
+            item.description = description
+
+        image = content.get("image") or {}
+        item.thumb = image.get("landscapeUrl") or image.get("portraitUrl") or item.thumb
+        item.poster = image.get("portraitUrl") or item.poster
+
+        logo = content.get("logo") or {}
+        if logo.get("normalUrl"):
+            item.icon = logo["normalUrl"]
+
+        provider = content.get("contentProvider", "")
+        if provider:
+            item.set_info_label("studio", provider)
+
+        duration = content.get("formattedDuration", "")
+        if duration:
+            item.set_info_label("duration", self.__parse_duration(duration))
+
+        broadcast = content.get("broadcastedAt", "")
+        if broadcast:
+            # "2026-02-19T20:30:00+01:00"
+            match = re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})", broadcast)
+            if match:
+                item.set_date(*[int(g) for g in match.groups()],
+                              text=content.get("formattedDate"))
+
+        expires = content.get("availableUntil", "")
+        if expires:
+            match = re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})", expires)
+            if match:
+                item.set_expire_datetime(None, *[int(g) for g in match.groups()])
+
+    @staticmethod
+    def __parse_duration(formatted):
+        """Parse a formatted duration string like ``"1u 23m"`` into seconds.
+
+        :param str formatted: Duration string from the API.
+        :return: Duration in seconds, or 0 if unparseable.
+        :rtype: int
+
+        """
+
+        total = 0
+        hours = re.search(r"(\d+)\s*u", formatted)
+        if hours:
+            total += int(hours.group(1)) * 3600
+        minutes = re.search(r"(\d+)\s*m", formatted)
+        if minutes:
+            total += int(minutes.group(1)) * 60
+        return total
+
+    # -- Welcome & Profile -------------------------------------------------
 
     def __welcome_and_select_profile(self):
         """Show welcome dialog and prompt for profile selection if needed."""
@@ -111,6 +933,8 @@ class Channel(chn_class.Channel):
 
         self.__handler.set_profile(profiles[selected]["id"])
 
+    # -- Device flow -------------------------------------------------------
+
     def __run_device_flow(self) -> bool:
         """Run device flow authentication with progress dialog and retry logic.
 
@@ -126,7 +950,8 @@ class Channel(chn_class.Channel):
                 return False
 
             from urllib.parse import quote
-            qr_url = "https://id.nlziet.nl/device?code={}&name={}".format(
+            qr_url = "{}?code={}&name={}".format(
+                NLZIETOAuth2Handler.DEVICE_PORTAL_URL,
                 quote(flow["user_code"]), quote(device_name))
             qr_path = generate_qr_image(qr_url)
 
@@ -232,6 +1057,8 @@ class Channel(chn_class.Channel):
         result = self.__handler.log_on(username, password)
         return result.logged_on
 
+    # -- Settings actions --------------------------------------------------
+
     def setup_device(self):
         """Device flow authentication triggered from settings."""
 
@@ -257,4 +1084,6 @@ class Channel(chn_class.Channel):
 
         self.__authenticator.log_off("", force=True)
         self.loggedOn = False
+        msg = LanguageHelper.get_localized_string(LanguageHelper.LoggedOutSuccessfully)
+        XbmcWrapper.show_dialog("NLZIET", msg)
         xbmc.executebuiltin("Container.Refresh()")
