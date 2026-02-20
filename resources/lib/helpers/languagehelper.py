@@ -160,6 +160,7 @@ class LanguageHelper(object):
 
     LogOut = 30611
     DeviceSetupTitle = 30612
+    DeviceSetupQrInstruction = 30613
     DeviceSetupVisit = 30614
     DeviceSetupEnterCode = 30616
     Cancel = 30617
@@ -170,6 +171,7 @@ class LanguageHelper(object):
     SelectProfile = 30622
     SwitchProfile = 30625
     LoginFirst = 30626
+    QrAddonMissing = 30629
 
     Today = 30551
     Yesterday = 30552

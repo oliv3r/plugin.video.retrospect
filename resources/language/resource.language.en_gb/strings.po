@@ -1306,6 +1306,10 @@ msgctxt "#30612"
 msgid "Device Setup"
 msgstr ""
 
+msgctxt "#30613"
+msgid "Scan this QR code to add your device."
+msgstr ""
+
 msgctxt "#30614"
 msgid "To set up your device, visit:"
 msgstr ""
@@ -1344,4 +1348,8 @@ msgstr ""
 
 msgctxt "#30626"
 msgid "Please log in first."
+msgstr ""
+
+msgctxt "#30629"
+msgid "QR code addon not installed.[CR]Install 'script.module.qrcode' for QR code support."
 msgstr ""
