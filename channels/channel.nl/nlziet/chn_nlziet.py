@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """NLZiet channel for Retrospect."""
 
+import datetime
 import re
 import time
 from typing import Optional, List, Tuple, Union
@@ -10,6 +11,7 @@ import xbmc
 from resources.lib import chn_class
 from resources.lib import contenttype
 from resources.lib import mediatype
+from resources.lib.actions import action
 from resources.lib.authentication.authenticator import Authenticator
 from resources.lib.authentication.nlzietoauth2handler import NLZIETOAuth2Handler
 from resources.lib.deviceauthdialog import DeviceAuthDialog, generate_qr_image
@@ -26,7 +28,7 @@ from api import (
     API_V8_PROFILE, API_V8_RECOMMEND,
     API_V8_SERIES, API_V8_SERIES_PREFIX, API_V8_TRACKED_SERIES,
     API_V9_CONTINUE_WATCHING,
-    API_V9_EPG_LIVE_CHANNEL, API_V9_EPG_DATE, API_V9_EPG_LIVE,
+    API_V9_EPG, API_V9_EPG_LIVE_CHANNEL, API_V9_EPG_DATE, API_V9_EPG_LIVE,
     API_V9_PLACEMENT_EXPLORE_PREFIX, API_V9_LIVE_HANDSHAKE,
     API_V9_PLACEMENT,
     API_V9_RECOMMEND_WITH, API_V9_RECOMMEND_FILTERED,
@@ -1260,6 +1262,156 @@ class Channel(chn_class.Channel):
         self.__select_profile_if_needed()
         self.__set_auth_headers()
         xbmc.executebuiltin("Container.Refresh()")
+
+    # -- IPTV Manager integration ------------------------------------------
+
+    def create_iptv_streams(self, parameter_parser):
+        """Provide live channel data for IPTV Manager.
+
+        :param ActionParser parameter_parser: Action parser for building URLs.
+        :return: List of IPTV stream dicts.
+        :rtype: list
+
+        """
+
+        if not self.loggedOn:
+            self.loggedOn = self.log_on()
+        if not self.loggedOn:
+            Logger.warning("NLZIET IPTV: Not authenticated, returning empty streams")
+            return []
+
+        live_data = UriHandler.open(API_V9_EPG_LIVE, additional_headers=self.httpHeaders)
+        if not live_data:
+            Logger.warning("NLZIET IPTV: Empty live channel response")
+            return []
+
+        json_data = JsonHelper(live_data)
+        channels = json_data.get_value("data", fallback=json_data.json)
+        if not isinstance(channels, list):
+            channels = []
+
+        parent_item = MediaItem("Live", API_V9_EPG_LIVE, media_type=mediatype.FOLDER)
+        items = []
+        iptv_streams = []
+
+        for channel_entry in channels:
+            item = self.create_live_channel_item(channel_entry)
+            if item is None:
+                continue
+            items.append(item)
+
+            content = channel_entry["channel"]["content"]
+            logo_url = content.get("logo", {}).get("normalUrl", "")
+            iptv_streams.append(dict(id=content["id"],
+                name=content["title"],
+                logo=logo_url,
+                group=self.channelName,
+                stream=parameter_parser.create_action_url(
+                    self, action=action.PLAY_VIDEO, item=item,
+                    store_id=parent_item.guid),
+            ))
+
+        parameter_parser.pickler.store_media_items(
+            parent_item.guid, parent_item, items)
+        Logger.info("NLZIET IPTV: Returning %d streams", len(iptv_streams))
+        return iptv_streams
+
+    def create_iptv_epg(self, parameter_parser):
+        """Provide EPG data for IPTV Manager.
+
+        Fetches 3 days in the past and 3 days in the future.
+
+        :param ActionParser parameter_parser: Action parser for building URLs.
+        :return: EPG dict keyed by channel ID.
+        :rtype: dict
+
+        """
+
+        if not self.loggedOn:
+            self.loggedOn = self.log_on()
+        if not self.loggedOn:
+            Logger.warning("NLZIET IPTV: Not authenticated, returning empty EPG")
+            return {}
+
+        parent = MediaItem("EPG", API_V9_EPG,
+                           media_type=mediatype.FOLDER)
+        iptv_epg = {}
+        media_items = []
+
+        start = datetime.datetime.now() - datetime.timedelta(days=3)
+        for day_offset in range(6):
+            air_date = start + datetime.timedelta(days=day_offset)
+            date_str = air_date.strftime("%Y-%m-%d")
+            epg_url = API_V9_EPG_DATE.format(date_str)
+
+            epg_data = UriHandler.open(epg_url, additional_headers=self.httpHeaders)
+            if not epg_data:
+                Logger.warning("NLZIET IPTV: No EPG data for %s", date_str)
+                continue
+
+            json_data = JsonHelper(epg_data)
+            channels = json_data.get_value("data", fallback=json_data.json)
+            if not isinstance(channels, list):
+                continue
+
+            for channel_entry in channels:
+                channel_id = channel_entry.get("channel", {}).get("content", {}).get("id")
+                if not channel_id:
+                    continue
+
+                if channel_id not in iptv_epg:
+                    iptv_epg[channel_id] = []
+
+                for prog in channel_entry.get("programLocations", []):
+                    content = prog.get("content", {})
+                    title = content.get("title")
+                    start_at = content.get("startAt")
+                    end_at = content.get("endAt")
+                    if not title or not start_at or not end_at:
+                        continue
+
+                    epg_item = dict(start=start_at, stop=end_at, title=title)
+
+                    image = content.get("image", {})
+                    landscape = image.get("landscapeUrl")
+                    if landscape:
+                        epg_item["image"] = landscape
+
+                    if content.get("isReplayAllowed"):
+                        replay_item = self.__create_replay_item(content, channel_id)
+                        if replay_item:
+                            media_items.append(replay_item)
+                            epg_item["stream"] = parameter_parser.create_action_url(
+                                self, action=action.PLAY_VIDEO,
+                                item=replay_item, store_id=parent.guid)
+
+                    iptv_epg[channel_id].append(epg_item)
+
+        parameter_parser.pickler.store_media_items(parent.guid, parent, media_items)
+        Logger.info("NLZIET IPTV: Returning EPG for %d channels", len(iptv_epg))
+        return iptv_epg
+
+    def __create_replay_item(self, content, channel_id):
+        """Create a playable MediaItem for an EPG replay stream.
+
+        :param dict content: The program content dict from the EPG response.
+        :param str channel_id: The channel ID for the replay URL.
+        :return: A MediaItem or None if no assetId is available.
+        :rtype: MediaItem|None
+
+        """
+
+        asset_id = content.get("assetId")
+        if not asset_id:
+            return None
+
+        replay_url = API_V9_EPG_LIVE_CHANNEL.format(channel_id)
+        item = MediaItem(content["title"], replay_url, media_type=mediatype.VIDEO)
+        item.isGeoLocked = True
+        item.isDrmProtected = True
+        item.metaData["asset_id"] = asset_id
+        item.HttpHeaders = self.httpHeaders
+        return item
 
     def log_off(self):
         """Force a logoff for the channel."""

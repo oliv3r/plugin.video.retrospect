@@ -892,6 +892,7 @@ class TestNLZietChannel(ChannelTest):
         self.channel._Channel__set_vod_metadata(item, content)
 
 
+
     # -- __handle_stream_handshake error handling ----------------------------
 
     @patch("chn_nlziet.UriHandler")
