@@ -12,6 +12,7 @@ from resources.lib import chn_class
 from resources.lib import contenttype
 from resources.lib import mediatype
 from resources.lib.actions import action
+from resources.lib.addonsettings import AddonSettings, LOCAL
 from resources.lib.authentication.authenticator import Authenticator
 from resources.lib.authentication.nlzietoauth2handler import NLZIETOAuth2Handler
 from resources.lib.deviceauthdialog import DeviceAuthDialog, generate_qr_image
@@ -163,6 +164,17 @@ class Channel(chn_class.Channel):
                               updater=self.update_vod_item)
 
     # -- Authentication ----------------------------------------------------
+
+    @property
+    def search_profile_id(self) -> Optional[str]:
+        """Return the active NLZIET profile ID for search history scoping.
+
+        Returns None if no profile is active (e.g. during menu operations
+        before login), which falls back to the plain "search" key.
+        """
+        profile_id = AddonSettings.get_setting(
+            f"{self.__handler.prefix}profile_id", store=LOCAL)
+        return profile_id or None
 
     def log_on(self, username=None, password=None) -> bool:
         if self.loggedOn:
