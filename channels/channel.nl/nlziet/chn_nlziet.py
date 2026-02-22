@@ -31,6 +31,7 @@ from api import (
     API_V9_PLACEMENT,
     API_V9_RECOMMEND_WITH, API_V9_RECOMMEND_FILTERED,
     API_V9_SEARCH, API_V9_SEARCH_PREFIX,
+    API_V9_SERIES_EPISODE_AT,
     API_V9_SERIES_EPISODES, API_V9_SERIES_PLAY, API_V9_SERIES_PREFIX,
     API_V9_SERIES_SEASON_EPISODES,
     API_V9_STREAM_HANDSHAKE, API_V9_TRACKED_SERIES,
@@ -694,8 +695,9 @@ class Channel(chn_class.Channel):
             episodes = self.process_folder_list(episodes_item)
             items.extend(episodes)
 
+        shortcuts = self.__build_episode_shortcuts(series_id, seasons)
         # Return empty data so the parser does not run again.
-        return "", items
+        return "", shortcuts + items
 
     def update_vod_item(self, item: MediaItem) -> MediaItem:
         """Fetch the DASH stream URL for a VOD or replay item.
@@ -723,6 +725,186 @@ class Channel(chn_class.Channel):
         items = chn_class.Channel.search_site(self, API_V9_SEARCH, needle)
         Logger.debug("NLZIET search_site: returned %d items", len(items))
         return items
+
+    def __build_episode_shortcuts(self, series_id, seasons):
+        """Build Continue / Most Recent / First episode shortcut items.
+
+        :param str series_id:    The series ID.
+        :param list[dict] seasons: Season dicts from the series detail response.
+        :return: Up to three playable shortcut items.
+        :rtype: list[MediaItem]
+
+        """
+
+        if not series_id or not seasons:
+            return []
+
+        continue_item = self.__fetch_continue_item(series_id)
+
+        # Fetch boundary episodes from the oldest and newest seasons.
+        # The API may return episodes in either order within a season,
+        # so we fetch both ends and pick by episode number.
+        oldest_season = seasons[0]
+        oldest_count = oldest_season.get("episodeCount") or 1
+        newest_season = seasons[-1]
+        newest_count = newest_season.get("episodeCount") or 1
+
+        ep_a = self.__fetch_boundary_episode(
+            series_id, oldest_season, offset=0)
+        ep_b = self.__fetch_boundary_episode(
+            series_id, oldest_season,
+            offset=max(0, oldest_count - 1)) if oldest_count > 1 else None
+
+        if oldest_season["id"] != newest_season["id"]:
+            ep_c = self.__fetch_boundary_episode(
+                series_id, newest_season, offset=0)
+            ep_d = self.__fetch_boundary_episode(
+                series_id, newest_season,
+                offset=max(0, newest_count - 1)) if newest_count > 1 else None
+        else:
+            ep_c = ep_d = None
+
+        # Determine first and most-recent by episode number.
+        seen_urls = set()
+        candidates = []
+        for e in (ep_a, ep_b, ep_c, ep_d):
+            if e and e.url not in seen_urls:
+                seen_urls.add(e.url)
+                candidates.append(e)
+        first_item = None
+        recent_item = None
+        if candidates:
+            def _sort_key(item):
+                return (item.metaData.get("season", 0),
+                        item.metaData.get("episode", 0))
+            candidates.sort(key=_sort_key)
+            first_item = candidates[0]
+            recent_item = candidates[-1]
+            if first_item.url == recent_item.url:
+                recent_item = None
+            if first_item:
+                first_item.name = self.__shortcut_label(
+                    first_item, LanguageHelper.FirstEpisode)
+            if recent_item:
+                recent_item.name = self.__shortcut_label(
+                    recent_item, LanguageHelper.MostRecentEpisode)
+
+        shortcuts = []
+        # Omit continue when it points to the same episode as first.
+        if continue_item:
+            first_id = first_item.url if first_item else None
+            if continue_item.url != first_id:
+                shortcuts.append(continue_item)
+        if recent_item:
+            shortcuts.append(recent_item)
+        if first_item:
+            shortcuts.append(first_item)
+
+        return shortcuts
+
+    @staticmethod
+    def __shortcut_label(item, label_id):
+        """Build a shortcut display name like ``First Episode: Title``.
+
+        :param MediaItem item:  The shortcut item with metaData.
+        :param int label_id:    LanguageHelper string ID for the label.
+        :return: The formatted name.
+        :rtype: str
+
+        """
+
+        label = LanguageHelper.get_localized_string(label_id)
+        ep_title = item.metaData.get("nlziet:ep_title", "")
+        if ep_title:
+            return "{}: {}".format(label, ep_title)
+        return label
+
+    def __fetch_continue_item(self, series_id):
+        """Fetch the "Continue Watching" episode via ``/v9/series/{id}/play``.
+
+        :param str series_id: The series ID.
+        :return: A playable MediaItem or None.
+        :rtype: MediaItem|None
+
+        """
+
+        url = API_V9_SERIES_PLAY.format(series_id)
+        data = UriHandler.open(url, additional_headers=self.httpHeaders,
+                               no_cache=True)
+        if not data:
+            return None
+
+        play_json = JsonHelper(data)
+        content = play_json.get_value("content", fallback=None)
+        if not content:
+            return None
+
+        content_id = content.get("id")
+        ep_title = content.get("title", "")
+        if not content_id:
+            return None
+
+        label = LanguageHelper.get_localized_string(LanguageHelper.ContinueWatching)
+        name = "{}: {}".format(label, ep_title) if ep_title else label
+        item = MediaItem(name, self.__vod_handshake_url(content_id),
+                         media_type=mediatype.EPISODE)
+        item.isDrmProtected = True
+        item.isGeoLocked = True
+        item.dontGroup = True
+        self.__set_vod_metadata(item, content)
+        item.HttpHeaders = self.httpHeaders
+        return item
+
+    def __fetch_boundary_episode(self, series_id, season, offset):
+        """Fetch a single episode at a given offset within a season.
+
+        :param str series_id: The series ID.
+        :param dict season:   Season dict with ``id`` and ``episodeCount``.
+        :param int offset:    Zero-based episode offset.
+        :return: A playable MediaItem or None.
+        :rtype: MediaItem|None
+
+        """
+
+        season_id = season.get("id")
+        if not season_id:
+            return None
+
+        url = API_V9_SERIES_EPISODE_AT.format(series_id, season_id, offset)
+        data = UriHandler.open(url, additional_headers=self.httpHeaders,
+                               no_cache=True)
+        if not data:
+            return None
+
+        episodes = JsonHelper(data).get_value("data", fallback=[])
+        if not episodes:
+            return None
+
+        content = episodes[0].get("content", {})
+        content_id = content.get("id")
+        if not content_id:
+            return None
+
+        subtitle = content.get("subtitle") or content.get("title", "")
+        # Strip numbering prefix (e.g. "S1:A6 Title" → "Title").
+        ep_title = re.sub(r"^S\d+:A\d+\s*", "", subtitle) or subtitle
+        item = MediaItem(ep_title, self.__vod_handshake_url(content_id),
+                         media_type=mediatype.EPISODE)
+        item.isDrmProtected = True
+        item.isGeoLocked = True
+        item.dontGroup = True
+        item.metaData["nlziet:ep_title"] = ep_title
+
+        numbering = content.get("formattedEpisodeNumbering") or ""
+        match = re.match(r"S(\d+):A(\d+)", numbering or subtitle)
+        if match:
+            item.set_season_info(match.group(1), match.group(2))
+            item.metaData["season"] = int(match.group(1))
+            item.metaData["episode"] = int(match.group(2))
+
+        self.__set_vod_metadata(item, content)
+        item.HttpHeaders = self.httpHeaders
+        return item
 
     @staticmethod
     def __vod_handshake_url(content_id):

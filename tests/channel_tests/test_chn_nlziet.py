@@ -549,6 +549,229 @@ class TestNLZietChannel(ChannelTest):
         self.assertNotIn("seasonId", parent.url)
         self.assertIn(ep, items)
 
+    # -- Episode shortcut tests -----------------------------------------------
+
+    @patch("chn_nlziet.UriHandler")
+    def test_fetch_continue_item(self, mock_uri):
+        """Continue watching returns a playable item from /play endpoint."""
+        mock_uri.open.return_value = json.dumps({
+            "content": {
+                "id": "ep42",
+                "title": "Familiediner"
+            }
+        })
+        item = self.channel._Channel__fetch_continue_item("sid")
+        self.assertIsNotNone(item)
+        self.assertIn("ep42", item.url)
+        self.assertIn("/v9/stream/handshake", item.url)
+        self.assertTrue(item.dontGroup)
+        mock_uri.open.assert_called_once()
+        self.assertIn("/v9/series/sid/play", mock_uri.open.call_args[0][0])
+
+    @patch("chn_nlziet.UriHandler")
+    def test_fetch_continue_item_empty_response(self, mock_uri):
+        """Continue watching returns None on empty response."""
+        mock_uri.open.return_value = ""
+        item = self.channel._Channel__fetch_continue_item("sid")
+        self.assertIsNone(item)
+
+    @patch("chn_nlziet.UriHandler")
+    def test_fetch_continue_item_no_content_id(self, mock_uri):
+        """Continue watching returns None when content has no id."""
+        mock_uri.open.return_value = json.dumps({
+            "content": {"title": "No ID"}
+        })
+        item = self.channel._Channel__fetch_continue_item("sid")
+        self.assertIsNone(item)
+
+    @patch("chn_nlziet.UriHandler")
+    def test_fetch_boundary_episode_first(self, mock_uri):
+        """Boundary episode fetches offset=0."""
+        mock_uri.open.return_value = json.dumps({
+            "data": [{
+                "content": {
+                    "id": "first1",
+                    "title": "Series Title",
+                    "subtitle": "S01:A01 Pilot"
+                }
+            }]
+        })
+        season = {"id": "s1", "episodeCount": 10}
+        item = self.channel._Channel__fetch_boundary_episode(
+            "sid", season, offset=0)
+        self.assertIsNotNone(item)
+        self.assertIn("first1", item.url)
+        self.assertTrue(item.dontGroup)
+        self.assertEqual(item.metaData.get("nlziet:ep_title"), "Pilot")
+        self.assertEqual(item.metaData.get("season"), 1)
+        self.assertEqual(item.metaData.get("episode"), 1)
+        call_url = mock_uri.open.call_args[0][0]
+        self.assertIn("seasonId=s1", call_url)
+        self.assertIn("offset=0", call_url)
+        self.assertIn("limit=1", call_url)
+
+    @patch("chn_nlziet.UriHandler")
+    def test_fetch_boundary_episode_most_recent(self, mock_uri):
+        """Boundary episode fetches given offset."""
+        mock_uri.open.return_value = json.dumps({
+            "data": [{
+                "content": {
+                    "id": "last1",
+                    "title": "Latest",
+                    "subtitle": "S02:A20 Finale"
+                }
+            }]
+        })
+        season = {"id": "s2", "episodeCount": 20}
+        item = self.channel._Channel__fetch_boundary_episode(
+            "sid", season, offset=19)
+        self.assertIsNotNone(item)
+        self.assertIn("last1", item.url)
+        self.assertEqual(item.metaData.get("nlziet:ep_title"), "Finale")
+        self.assertEqual(item.metaData.get("season"), 2)
+        self.assertEqual(item.metaData.get("episode"), 20)
+        call_url = mock_uri.open.call_args[0][0]
+        self.assertIn("offset=19", call_url)
+
+    @patch("chn_nlziet.UriHandler")
+    def test_fetch_boundary_episode_no_season_id(self, mock_uri):
+        """Boundary episode returns None when season has no id."""
+        item = self.channel._Channel__fetch_boundary_episode(
+            "sid", {}, offset=0)
+        self.assertIsNone(item)
+        mock_uri.open.assert_not_called()
+
+    @patch("chn_nlziet.UriHandler")
+    def test_fetch_boundary_episode_empty_response(self, mock_uri):
+        """Boundary episode returns None on empty response."""
+        mock_uri.open.return_value = ""
+        item = self.channel._Channel__fetch_boundary_episode(
+            "sid", {"id": "s1"}, offset=0)
+        self.assertIsNone(item)
+
+    @patch("chn_nlziet.UriHandler")
+    def test_fetch_boundary_episode_numbering(self, mock_uri):
+        """Boundary episode parses season/episode numbering from subtitle."""
+        mock_uri.open.return_value = json.dumps({
+            "data": [{
+                "content": {
+                    "id": "ep1",
+                    "title": "Show",
+                    "subtitle": "S03:A07 The Episode"
+                }
+            }]
+        })
+        item = self.channel._Channel__fetch_boundary_episode(
+            "sid", {"id": "s1"}, offset=0)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.metaData.get("season"), 3)
+        self.assertEqual(item.metaData.get("episode"), 7)
+        self.assertEqual(item.metaData.get("nlziet:ep_title"), "The Episode")
+
+    @patch("chn_nlziet.UriHandler")
+    def test_build_shortcuts_all_three(self, mock_uri):
+        """Build shortcuts returns continue, recent, and first items."""
+        play_response = json.dumps({
+            "content": {"id": "cont1", "title": "Continue Ep"}
+        })
+        # Oldest season: offset=0 → S1:A1, offset=4 → S1:A5
+        s1_first = json.dumps({
+            "data": [{"content": {"id": "first1", "title": "S",
+                                  "subtitle": "S1:A1 Pilot"}}]
+        })
+        s1_last = json.dumps({
+            "data": [{"content": {"id": "s1last", "title": "S",
+                                  "subtitle": "S1:A5 Mid"}}]
+        })
+        # Newest season: offset=0 → S2:A1, offset=9 → S2:A10
+        s2_first = json.dumps({
+            "data": [{"content": {"id": "s2first", "title": "S",
+                                  "subtitle": "S2:A1 Start"}}]
+        })
+        s2_last = json.dumps({
+            "data": [{"content": {"id": "last1", "title": "S",
+                                  "subtitle": "S2:A10 Latest"}}]
+        })
+        mock_uri.open.side_effect = [
+            play_response, s1_first, s1_last, s2_first, s2_last]
+        seasons = [
+            {"id": "s1", "episodeCount": 5},
+            {"id": "s2", "episodeCount": 10}
+        ]
+        shortcuts = self.channel._Channel__build_episode_shortcuts("sid", seasons)
+        self.assertEqual(len(shortcuts), 3)
+        # Order: continue, recent, first
+        self.assertIn("cont1", shortcuts[0].url)
+        self.assertIn("last1", shortcuts[1].url)
+        self.assertIn("first1", shortcuts[2].url)
+
+    @patch("chn_nlziet.UriHandler")
+    def test_build_shortcuts_omits_continue_when_same_as_first(self, mock_uri):
+        """Continue is omitted when it points to the same episode as first."""
+        same_id = "same1"
+        play_response = json.dumps({
+            "content": {"id": same_id, "title": "Same Ep"}
+        })
+        # Single season: offset=0 → S1:A1 (same as continue), offset=2 → S1:A3
+        ep_first = json.dumps({
+            "data": [{"content": {"id": same_id, "title": "S",
+                                  "subtitle": "S1:A1 Same"}}]
+        })
+        ep_last = json.dumps({
+            "data": [{"content": {"id": "last1", "title": "S",
+                                  "subtitle": "S1:A3 Latest"}}]
+        })
+        mock_uri.open.side_effect = [play_response, ep_first, ep_last]
+        seasons = [{"id": "s1", "episodeCount": 3}]
+        shortcuts = self.channel._Channel__build_episode_shortcuts("sid", seasons)
+        # Continue omitted, only recent + first
+        self.assertEqual(len(shortcuts), 2)
+        urls = [s.url for s in shortcuts]
+        self.assertTrue(any("last1" in u for u in urls))
+        self.assertTrue(any(same_id in u for u in urls))
+
+    def test_build_shortcuts_empty_seasons(self):
+        """Build shortcuts returns empty list for empty seasons."""
+        shortcuts = self.channel._Channel__build_episode_shortcuts("sid", [])
+        self.assertEqual(shortcuts, [])
+
+    def test_build_shortcuts_no_series_id(self):
+        """Build shortcuts returns empty list for empty series_id."""
+        shortcuts = self.channel._Channel__build_episode_shortcuts("", [{"id": "s1"}])
+        self.assertEqual(shortcuts, [])
+
+    @patch("chn_nlziet.UriHandler")
+    def test_build_shortcuts_all_fetches_fail(self, mock_uri):
+        """Build shortcuts handles all fetch failures gracefully."""
+        mock_uri.open.return_value = ""
+        seasons = [{"id": "s1", "episodeCount": 5}]
+        shortcuts = self.channel._Channel__build_episode_shortcuts("sid", seasons)
+        self.assertEqual(shortcuts, [])
+
+    @patch("chn_nlziet.UriHandler")
+    def test_build_shortcuts_reversed_api_order(self, mock_uri):
+        """Shortcuts are correct even when API returns newest episode first."""
+        play_response = json.dumps({
+            "content": {"id": "cont1", "title": "Continue Ep"}
+        })
+        # Single season, API returns newest-first (A6 at offset=0).
+        ep_newest = json.dumps({
+            "data": [{"content": {"id": "ep6", "title": "Show",
+                                  "subtitle": "S1:A6 Finale"}}]
+        })
+        ep_oldest = json.dumps({
+            "data": [{"content": {"id": "ep1", "title": "Show",
+                                  "subtitle": "S1:A1 Pilot"}}]
+        })
+        mock_uri.open.side_effect = [play_response, ep_newest, ep_oldest]
+        seasons = [{"id": "s1", "episodeCount": 6}]
+        shortcuts = self.channel._Channel__build_episode_shortcuts("sid", seasons)
+        self.assertEqual(len(shortcuts), 3)
+        # First = ep1 (S1:A1), Recent = ep6 (S1:A6) regardless of API order.
+        self.assertIn("cont1", shortcuts[0].url)
+        self.assertIn("ep6", shortcuts[1].url)   # recent
+        self.assertIn("ep1", shortcuts[2].url)   # first
+
     def test_create_vod_item_series_type(self):
         """Items with explicit type 'Series' become FolderItems."""
         from resources.lib.mediaitem import FolderItem
