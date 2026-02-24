@@ -534,7 +534,11 @@ class _RequestsHandler(object):
                 has_body = params is not None or data is not None or json is not None
                 http_method = "POST" if has_body else "GET"
 
-            if http_method == "PATCH":
+            if http_method == "DELETE":
+                Logger.info("Performing a DELETE for %s", uri)
+                r = s.delete(uri, proxies=proxies, headers=headers,
+                             stream=stream, timeout=self.webTimeOut)
+            elif http_method == "PATCH":
                 Logger.info("Performing a PATCH with '%s' for %s",
                             headers.get("content-type", "<No Content-Type>"), uri)
                 r = s.patch(uri, data=data, json=json, proxies=proxies,
