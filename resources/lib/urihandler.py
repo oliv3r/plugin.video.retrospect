@@ -528,31 +528,31 @@ class _RequestsHandler(object):
 
             headers = self.__get_headers(referer, additional_headers)
 
-            if params is not None:
-                # Old UriHandler behaviour. Set form header to keep compatible
-                if "content-type" not in headers:
-                    headers["content-type"] = "application/x-www-form-urlencoded"
+            # Resolve effective HTTP method: explicit > body implies POST > GET
+            http_method = method.upper() if method else ""
+            if not http_method:
+                has_body = params is not None or data is not None or json is not None
+                http_method = "POST" if has_body else "GET"
 
-                Logger.info("Performing a POST with '%s' for %s", headers["content-type"], uri)
-                r = s.post(uri, data=params, proxies=proxies, headers=headers,
+            if http_method == "PATCH":
+                Logger.info("Performing a PATCH with '%s' for %s",
+                            headers.get("content-type", "<No Content-Type>"), uri)
+                r = s.patch(uri, data=data, json=json, proxies=proxies,
+                            headers=headers, stream=stream,
+                            timeout=self.webTimeOut)
+            elif http_method == "POST":
+                if params is not None:
+                    # Old UriHandler behavior. Set form header to keep compatible
+                    if "content-type" not in headers:
+                        headers["content-type"] = "application/x-www-form-urlencoded"
+                    post_data, post_json = params, None
+                else:
+                    post_data, post_json = data, json
+                Logger.info("Performing a POST with '%s' for %s",
+                            headers.get("content-type", "<No Content-Type>"), uri)
+                r = s.post(uri, data=post_data, json=post_json,
+                           proxies=proxies, headers=headers,
                            stream=stream, timeout=self.webTimeOut)
-            elif data is not None:
-                # Normal Requests compatible data object
-                Logger.info("Performing a POST with '%s' for %s", headers.get("content-type", "<No Content-Type>"), uri)
-                if method.lower() == "patch":
-                    r = s.patch(uri, data=data, proxies=proxies, headers=headers,
-                               stream=stream, timeout=self.webTimeOut)
-                else:
-                    r = s.post(uri, data=data, proxies=proxies, headers=headers,
-                               stream=stream, timeout=self.webTimeOut)
-            elif json is not None:
-                Logger.info("Performing a json POST with '%s' for %s", headers.get("content-type", "<No Content-Type>"), uri)
-                if method.lower() == "patch":
-                    r = s.patch(uri, json=json, proxies=proxies, headers=headers,
-                                stream=stream, timeout=self.webTimeOut)
-                else:
-                    r = s.post(uri, json=json, proxies=proxies, headers=headers,
-                               stream=stream, timeout=self.webTimeOut)
             else:
                 Logger.info("Performing a GET for %s", uri)
                 r = s.get(uri, proxies=proxies, headers=headers,
