@@ -84,7 +84,7 @@
             <!-- Visit instruction -->
             <control type="label" id="40">
                 <left>40</left>
-                <top>166</top>
+                <top>230</top>
                 <width>780</width>
                 <height>36</height>
                 <font>font16</font>
@@ -93,7 +93,7 @@
             <!-- Verification URL -->
             <control type="label" id="50">
                 <left>40</left>
-                <top>208</top>
+                <top>272</top>
                 <width>780</width>
                 <height>36</height>
                 <font>font16</font>
@@ -103,7 +103,7 @@
             <!-- Enter code instruction -->
             <control type="label" id="60">
                 <left>40</left>
-                <top>250</top>
+                <top>314</top>
                 <width>780</width>
                 <height>36</height>
                 <font>font16</font>
@@ -112,7 +112,7 @@
             <!-- User code -->
             <control type="label" id="70">
                 <left>40</left>
-                <top>292</top>
+                <top>356</top>
                 <width>780</width>
                 <height>65</height>
                 <font>font20</font>
@@ -163,8 +163,9 @@
                     <font>font16</font>
                     <align>center</align>
                     <aligny>center</aligny>
-                    <textcolor>white</textcolor>
-                    <texturenofocus colordiffuse="0xFF404040">white.png</texturenofocus>
+                    <textcolor>grey</textcolor>
+                    <focusedcolor>white</focusedcolor>
+                    <texturenofocus />
                     <texturefocus colordiffuse="button_focus">white.png</texturefocus>
                     <onclick>Close()</onclick>
                 </control>
@@ -176,8 +177,9 @@
                     <font>font16</font>
                     <align>center</align>
                     <aligny>center</aligny>
-                    <textcolor>white</textcolor>
-                    <texturenofocus colordiffuse="0xFF404040">white.png</texturenofocus>
+                    <textcolor>grey</textcolor>
+                    <focusedcolor>white</focusedcolor>
+                    <texturenofocus />
                     <texturefocus colordiffuse="button_focus">white.png</texturefocus>
                 </control>
 
