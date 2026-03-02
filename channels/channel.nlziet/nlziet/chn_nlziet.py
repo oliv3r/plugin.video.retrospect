@@ -1200,7 +1200,12 @@ class Channel(chn_class.Channel):
 
         while True:
             device_name = xbmc.getInfoLabel("System.FriendlyName") or "Kodi Retrospect"
-            flow = self.__handler.start_device_flow(device_name)
+            try:
+                flow = self.__handler.start_device_flow(device_name)
+            except OSError:
+                msg = LanguageHelper.get_localized_string(LanguageHelper.ConnectionError)
+                XbmcWrapper.show_dialog("NLZIET", msg)
+                return False
             if not flow:
                 msg = LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupFailed)
                 XbmcWrapper.show_dialog("NLZIET", msg)
@@ -1263,13 +1268,14 @@ class Channel(chn_class.Channel):
             _attempts = 0
             try:
                 while time.time() < end_time:
-                    if monitor.waitForAbort(0.5):
+                    # Wait up to 0.5 s, but wake immediately when the dialog closes.
+                    if dialog.stop_event.wait(0.5):
+                        return  # dialog closed — flags already set by onClosed()
+
+                    if monitor.abortRequested():
                         auth_result.append("cancelled")
                         dialog.close()
                         return
-
-                    if dialog.cancelled or dialog.manual_login:
-                        return  # doModal() already closed/closing the dialog
 
                     elapsed = time.time() - start_time
                     pct = max(0.0, 100.0 - (elapsed / expires_in) * 100.0)

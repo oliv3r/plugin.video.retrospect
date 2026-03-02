@@ -166,6 +166,7 @@
                     <textcolor>white</textcolor>
                     <texturenofocus colordiffuse="0xFF404040">white.png</texturenofocus>
                     <texturefocus colordiffuse="button_focus">white.png</texturefocus>
+                    <onclick>Close()</onclick>
                 </control>
 
                 <!-- Manual login button -->

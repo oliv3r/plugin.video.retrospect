@@ -2,6 +2,7 @@
 """Device flow authentication dialog backed by a Kodi XML skin."""
 
 import os
+import threading
 
 import xbmcgui
 
@@ -82,6 +83,7 @@ class DeviceAuthDialog(xbmcgui.WindowXMLDialog):
         self._logo_path = None
         self._cancelled = False
         self._manual = False
+        self._stop_event = threading.Event()
 
     def set_content(self, title, visit_text, verification_uri,
                     enter_code_text, user_code, expires_in, cancel_label,
@@ -155,6 +157,17 @@ class DeviceAuthDialog(xbmcgui.WindowXMLDialog):
     def manual_login(self):
         return self._manual
 
+    @property
+    def stop_event(self) -> threading.Event:
+        """Event set when the dialog closes for any reason.
+
+        Background threads can block on ``stop_event.wait(timeout)`` instead of
+        busy-polling ``cancelled``/``manual_login``.  The event is set inside
+        ``onClosed()`` before any other cleanup, so it fires for every close
+        path: button click, Escape/Back, programmatic ``close()``, Kodi shutdown.
+        """
+        return self._stop_event
+
     def update_progress(self, percent, remaining_seconds):
         """Update the progress bar and time remaining label."""
 
@@ -172,16 +185,17 @@ class DeviceAuthDialog(xbmcgui.WindowXMLDialog):
             self._cancelled = True
             self.close()
 
-    def onControl(self, control):
-        control_id = control.getId()
-        if control_id == _ID_BTN_CANCEL:
+    def onClick(self, controlId):
+        if controlId == _ID_BTN_CANCEL:
             self._cancelled = True
             self.close()
-        elif control_id == _ID_BTN_MANUAL:
+        elif controlId == _ID_BTN_MANUAL:
             self._manual = True
             self.close()
 
     def onClosed(self):
+        # Signal background workers immediately, regardless of close reason.
+        self._stop_event.set()
         # Safety net: if the dialog was closed without an explicit button press
         # (e.g. a remote Back that bypassed onAction), treat it as a cancellation.
         if not self._cancelled and not self._manual:

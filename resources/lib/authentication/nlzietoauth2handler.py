@@ -528,6 +528,12 @@ class NLZIETOAuth2Handler(OAuth2Handler):
             Logger.info(f"NLZIET: Device flow started. User code: {result.get('user_code')}")
             return result
 
+        except OSError:
+            # Network-level failure (no connectivity, DNS error, etc.) — re-raise so
+            # callers can show the "cannot connect to service" message rather than the
+            # generic "failed to start device setup" message.
+            Logger.error("NLZIET: Device flow start failed (network error)", exc_info=True)
+            raise
         except Exception as e:
             Logger.error(f"NLZIET: Device flow start failed: {e}", exc_info=True)
             return None
