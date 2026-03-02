@@ -472,13 +472,16 @@ class Channel(chn_class.Channel):
             start_offset = max(-60, min(300, start_offset))
         except (ValueError, TypeError):
             start_offset = 0
-
         handshake_url = API_V9_LIVE_HANDSHAKE.format(channel_id)
         if start_offset != 0:
             handshake_url = f"{handshake_url}&startOffsetInSeconds={start_offset}"
 
-        return self.__handle_stream_handshake(
+        item = self.__handle_stream_handshake(
             item, handshake_url, manifest_update="full")
+        if start_offset > 0 and item.streams:
+            item.streams[-1].add_property(
+                "inputstream.adaptive.live_offset", str(start_offset))
+        return item
 
     # -- VOD content (movies, series, trending) ----------------------------
 
