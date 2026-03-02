@@ -1268,7 +1268,7 @@ class Channel(chn_class.Channel):
 
         def _poll_worker():
             _interval = interval
-            _time_since_poll = 0.0
+            _time_since_poll = _interval  # fire first poll immediately (~0.5 s)
             _attempts = 0
             try:
                 while time.time() < end_time:
