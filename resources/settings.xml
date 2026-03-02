@@ -79,7 +79,7 @@
         <!-- chn_nlziet.py -->
         <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_device_setup" label="30610" type="action" action="RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=execute&amp;command=setup_device)" option="close" visible="eq(-4,NLZIET)" />
         <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_username" type="text" label="30035" default="" visible="eq(-5,NLZIET)" />
-        <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_password" type="password" label="30036" default="" visible="eq(-6,NLZIET)" />
+        <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_password" type="text" label="30036" default="" visible="eq(-6,NLZIET)" />
         <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_password_set" label="30093" type="action" action="RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=encryptsetting&amp;settingid=channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_password&amp;settingname=NLZIET&amp;tabfocus=102)" option="close" visible="eq(-7,NLZIET)" />
         <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_log_off" label="30611" type="action" action="RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=execute&amp;command=log_off)" option="close" visible="eq(-8,NLZIET)" />
         <setting id="channel_89E7B29E-6356-4276-A435-5FA915377C2C_nlziet_select_profile" label="30625" type="action" action="RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=execute&amp;command=select_profile)" option="close" visible="eq(-9,NLZIET)" />
