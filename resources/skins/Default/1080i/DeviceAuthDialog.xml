@@ -75,10 +75,9 @@
             <!-- QR code image -->
             <control type="image" id="31">
                 <left>860</left>
-                <top>82</top>
+                <top>140</top>
                 <width>300</width>
                 <height>300</height>
-                <visible>false</visible>
             </control>
 
             <!-- Visit instruction -->

@@ -46,8 +46,7 @@ def generate_qr_image(url):
     path = os.path.join(cache_dir, "qr.png")
     try:
         import qrcode
-        import qrcode.image.pure
-        img = qrcode.make(url, image_factory=qrcode.image.pure.PyPNGImage)
+        img = qrcode.make(url)
         img.save(path)
         return path
     except Exception:
@@ -80,6 +79,7 @@ class DeviceAuthDialog(xbmcgui.WindowXMLDialog):
         self._cancel_label = ""
         self._manual_label = None
         self._qr_url = None
+        self._qr_path = None
         self._logo_path = None
         self._cancelled = False
         self._manual = False
@@ -112,6 +112,7 @@ class DeviceAuthDialog(xbmcgui.WindowXMLDialog):
         self._cancel_label = cancel_label
         self._manual_label = manual_label
         self._qr_url = qr_url
+        self._qr_path = generate_qr_image(qr_url) if qr_url else None
         self._logo_path = logo_path
 
     # -- Kodi lifecycle ----------------------------------------------------
@@ -128,19 +129,21 @@ class DeviceAuthDialog(xbmcgui.WindowXMLDialog):
             btn_manual.setVisible(False)
         else:
             btn_manual.setLabel(self._manual_label)
-        if self._qr_url:
+        if self._qr_path:
             from resources.lib.helpers.languagehelper import LanguageHelper
-            qr_path = generate_qr_image(self._qr_url)
-            if qr_path:
-                qr_ctrl = self.getControl(_ID_QR_IMAGE)
-                qr_ctrl.setImage(qr_path)
-                qr_ctrl.setVisible(True)
-                qr_text = LanguageHelper.get_localized_string(
-                    LanguageHelper.DeviceSetupQrInstruction)
-            else:
-                qr_text = LanguageHelper.get_localized_string(
-                    LanguageHelper.QrAddonMissing)
-            self.getControl(_ID_QR_TEXT).setLabel(qr_text)
+            qr_ctrl = self.getControl(_ID_QR_IMAGE)
+            qr_ctrl.setImage(self._qr_path)
+            qr_ctrl.setVisible(True)
+            self.getControl(_ID_QR_TEXT).setLabel(
+                LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupQrInstruction))
+        elif self._qr_url:
+            from resources.lib.helpers.languagehelper import LanguageHelper
+            self.getControl(_ID_QR_IMAGE).setVisible(False)
+            self.getControl(_ID_QR_TEXT).setLabel(
+                LanguageHelper.get_localized_string(LanguageHelper.QrAddonMissing))
+        else:
+            self.getControl(_ID_QR_IMAGE).setVisible(False)
+            self.getControl(_ID_QR_TEXT).setVisible(False)
         from resources.lib.retroconfig import Config
         logo_path = self._logo_path or os.path.join(
             Config.rootDir, "resources", "media", "icon.png")
