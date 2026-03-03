@@ -30,6 +30,7 @@ API_V8_TRACKED_SERIES = f"{_API_BASE_URL}/v8/trackedseries"
 API_V9_CONTINUE_WATCHING = f"{_API_BASE_URL}/v9/continueWatching"
 
 API_V9_EPG = f"{_API_BASE_URL}/v9/epg"
+API_V9_EPG_ITEM_DETAIL = f"{_API_BASE_URL}/v9/item/detail/{{}}/{{}}"
 API_V9_EPG_LIVE_CHANNEL = f"{_API_BASE_URL}/v9/epg/programlocations/live?channel={{}}"
 API_V9_EPG_DATE = f"{_API_BASE_URL}/v9/epg/programlocations?date={{}}"
 API_V9_EPG_LIVE = f"{_API_BASE_URL}/v9/epg/programlocations/live"
