@@ -116,6 +116,11 @@
                     <visible>ListItem.Property(RetrospectChannel)</visible>
                 </item>
 
+                <item library="retromenu.py" args="channel_order">
+                    <label>30630</label>
+                    <visible>ListItem.Property(RetrospectChannel)</visible>
+                </item>
+
                 <item library="retromenu.py" args="country_selection">
                     <label>30576</label>
                     <visible>ListItem.Property(RetrospectChannel)</visible>

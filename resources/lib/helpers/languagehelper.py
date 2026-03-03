@@ -178,6 +178,7 @@ class LanguageHelper(object):
     LoginFirst = 30626
     MaxStreamsReached = 30627
     QrAddonMissing = 30629
+    SortChannels = 30630
 
     Today = 30551
     Yesterday = 30552

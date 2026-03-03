@@ -68,6 +68,27 @@ class Menu(ActionParser):
         AddonSettings.set_channel_visibility(self.channelObject, False)
         self.refresh()
 
+    def reorder_channels(self):
+        """Opens the channel sort-order dialog and saves the user's chosen order."""
+
+        channels = ChannelIndex.get_register().get_channels()
+        if not channels:
+            return
+
+        import xbmcaddon
+        from resources.lib.channelorderdialog import ChannelOrderDialog
+        addon_path = xbmcaddon.Addon().getAddonInfo("path")
+        dialog = ChannelOrderDialog("ChannelOrderDialog.xml", addon_path)
+        dialog.set_channels(channels)
+        dialog.doModal()
+
+        if not dialog.cancelled:
+            order = ",".join(dialog.result_guids)
+            AddonSettings.store(LOCAL).set_setting("channel_order", order)
+            Logger.info("Channel order saved: %s", order)
+            self.refresh()
+        del dialog
+
     def select_channels(self):
         """ Selects the channels that should be visible.
 

@@ -45,6 +45,8 @@ else:
             m.remove_favourite()
         elif command == "channel_selection":
             m.select_channels()
+        elif command == "channel_order":
+            m.reorder_channels()
         elif command == "country_selection":
             m.show_country_settings()
         elif command == "settings":

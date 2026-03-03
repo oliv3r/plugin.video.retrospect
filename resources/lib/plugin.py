@@ -124,6 +124,22 @@ class Plugin(ActionParser):
                 from resources.lib.actions.cleanaction import CleanAction
                 addon_action = CleanAction(self)
 
+            elif self.params[keyword.ACTION] == action.CHANNEL_ORDER:
+                from resources.lib.helpers.channelimporter import ChannelIndex
+                from resources.lib.channelorderdialog import ChannelOrderDialog
+                import xbmcaddon
+                channels = ChannelIndex.get_register().get_channels()
+                addon_path = xbmcaddon.Addon().getAddonInfo("path")
+                dialog = ChannelOrderDialog("ChannelOrderDialog.xml", addon_path)
+                dialog.set_channels(channels)
+                dialog.doModal()
+                if not dialog.cancelled:
+                    from resources.lib.addonsettings import LOCAL
+                    order = ",".join(dialog.result_guids)
+                    AddonSettings.store(LOCAL).set_setting("channel_order", order)
+                del dialog
+                return
+
             elif self.params[keyword.ACTION] == action.LIST_CATEGORY:
                 from resources.lib.actions.channellistaction import ChannelListAction
                 addon_action = ChannelListAction(self, self.params[keyword.CATEGORY])

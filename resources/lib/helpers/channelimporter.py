@@ -7,7 +7,7 @@ import time
 
 import glob
 
-from resources.lib.addonsettings import AddonSettings
+from resources.lib.addonsettings import AddonSettings, LOCAL
 from resources.lib.xbmcwrapper import XbmcWrapper
 from resources.lib.helpers.languagehelper import LanguageHelper
 from resources.lib.retroconfig import Config
@@ -209,6 +209,16 @@ class ChannelIndex(object):
             # TODO: perhaps we should check that the settings.xml is correct and not broken?
 
         valid_channels.sort(key=lambda c: c.sort_key)
+
+        # Apply user-defined channel order if set
+        user_order = AddonSettings.store(LOCAL).get_setting("channel_order")
+        if user_order:
+            order_guids = [g.strip() for g in user_order.split(",") if g.strip()]
+            guid_to_pos = {guid: i for i, guid in enumerate(order_guids)}
+            max_pos = len(order_guids)
+            valid_channels.sort(key=lambda c: (guid_to_pos.get(c.guid, max_pos), c.sort_key))
+            Logger.debug("Applied user channel order (%d entries)", len(order_guids))
+
         visible_channels = [ci for ci in valid_channels if ci.visible and ci.enabled]
         Logger.info("Fetch a total of %d channels of which %d are visible.",
                     len(valid_channels),
