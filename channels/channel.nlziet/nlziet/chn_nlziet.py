@@ -1621,12 +1621,15 @@ class Channel(chn_class.Channel):
         queue = epg_enrichment.build_enrich_queue(all_programmes, cache)
         Logger.debug("NLZIET IPTV: enrich queue has %d items", len(queue))
         if queue:
+            # Any non-empty queue means there is still enrichment work to do —
+            # backoff must not increase until the queue reaches zero.
+            interesting_cycle = True
             now_items_remain = any(e[3] == 1 for e in queue)
-            if now_items_remain or is_stale:
-                interesting_cycle = True
             epg_enrichment.fetch_and_cache(queue[:EPG_ENRICH_BATCH_SIZE], self.httpHeaders)
+        else:
+            now_items_remain = False
 
-        # Adaptive backoff: slow down when idle, reset when there is work to do
+        # Adaptive backoff: slow down only when the queue is empty (idle).
         backoff_cycles = epg_enrichment.load_backoff_cycles()
         if interesting_cycle:
             backoff_cycles = 0
@@ -1636,7 +1639,12 @@ class Channel(chn_class.Channel):
                 epg_enrichment._MAX_BACKOFF_CYCLES)  # NOSONAR
         epg_enrichment.save_backoff_cycles(backoff_cycles)
 
-        delay = epg_enrichment.compute_signal_delay(backoff_cycles)
+        # Use a shorter delay when there are "now"-playing items still to enrich
+        # (visible change to the user) and a longer one for background work.
+        if interesting_cycle and not now_items_remain and not is_stale:
+            delay = 60
+        else:
+            delay = epg_enrichment.compute_signal_delay(backoff_cycles)
         Logger.debug("NLZIET IPTV: Signalling IPTV Manager (delay=%ds, backoff=%d)",
                      delay, backoff_cycles)
         self.__signal_iptv_manager(delay)

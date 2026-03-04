@@ -314,7 +314,11 @@ class TestMigrateLegacySettings(unittest.TestCase):
 
 
 class TestInterestingCycleLogic(unittest.TestCase):
-    """Verify the now_items_remain heuristic used in create_iptv_epg."""
+    """Verify the queue-empty/now_items heuristics used in create_iptv_epg.
+
+    interesting_cycle = queue non-empty (backoff only when queue == 0).
+    now_items_remain  = any(e[3]==1 for e in queue) — used to choose delay.
+    """
 
     def _make_queue(self, now_count=0, future_count=0, past_count=0):
         """Return a minimal queue in the [cid, aid, ts, is_now_int] format."""
@@ -324,22 +328,27 @@ class TestInterestingCycleLogic(unittest.TestCase):
             + [["cid", "aid", 1.0, 0]] * past_count
         )
 
-    def test_no_items_no_interesting(self):
+    def test_empty_queue_means_no_interesting(self):
         queue = self._make_queue()
-        self.assertFalse(any(e[3] == 1 for e in queue))
+        self.assertFalse(bool(queue))
 
-    def test_now_items_trigger_interesting(self):
+    def test_non_empty_queue_means_interesting(self):
+        self.assertTrue(bool(self._make_queue(future_count=100)))
+        self.assertTrue(bool(self._make_queue(past_count=50)))
+        self.assertTrue(bool(self._make_queue(now_count=5)))
+
+    def test_now_items_trigger_short_delay(self):
         queue = self._make_queue(now_count=5)
         self.assertTrue(any(e[3] == 1 for e in queue))
 
-    def test_future_only_not_interesting(self):
+    def test_future_only_no_short_delay(self):
         queue = self._make_queue(future_count=100)
         self.assertFalse(any(e[3] == 1 for e in queue))
 
-    def test_past_only_not_interesting(self):
+    def test_past_only_no_short_delay(self):
         queue = self._make_queue(past_count=50)
         self.assertFalse(any(e[3] == 1 for e in queue))
 
-    def test_mixed_without_now_not_interesting(self):
+    def test_mixed_without_now_no_short_delay(self):
         queue = self._make_queue(future_count=10, past_count=10)
         self.assertFalse(any(e[3] == 1 for e in queue))
