@@ -1653,11 +1653,6 @@ class Channel(chn_class.Channel):
                         epg_item["stream"] = parameter_parser.create_action_url(
                             self, action=action.PLAY_VIDEO,
                             item=wa_item, store_id=parent.guid)
-                        label = LanguageHelper.get_localized_string(
-                            LanguageHelper.WatchInAdvance)
-                        desc = epg_item.get("description") or ""
-                        epg_item["description"] = (
-                            "{0}. {1}".format(label, desc) if desc else label)
 
                 iptv_epg[channel_id].append(epg_item)
 
@@ -1729,7 +1724,7 @@ class Channel(chn_class.Channel):
         if not cid or not channel_id:
             return None
 
-        replay_url = API_V9_CATCHUP_HANDSHAKE.format(channel_id, cid)
+        replay_url = API_V9_CATCHUP_HANDSHAKE.format(channel_id, cid, asset_id or "")
         item = MediaItem(title, replay_url, media_type=mediatype.VIDEO)
         item.isGeoLocked = True
         item.isDrmProtected = True

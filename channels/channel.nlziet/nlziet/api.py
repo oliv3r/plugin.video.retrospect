@@ -95,6 +95,7 @@ API_V9_CATCHUP_HANDSHAKE = (
     API_V9_CATCHUP_PREFIX
     + "&channel={}"
     + "&id={}"
+    + "&preferredAssetId={}"
     + "&drmType=Widevine"
     + "&sourceType=Dash"
     + "&playerName=BitmovinWeb"
