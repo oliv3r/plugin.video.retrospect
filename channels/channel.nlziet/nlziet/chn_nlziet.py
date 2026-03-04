@@ -1473,6 +1473,9 @@ class Channel(chn_class.Channel):
             Logger.warning("NLZIET IPTV: Not authenticated, returning empty EPG")
             return {}
 
+        # One-time migration: clear stale large keys from settings.json.
+        epg_enrichment.migrate_legacy_settings()
+
         # Load appconfig (cached); abort if the server has blocked the app.
         appconfig = self.__load_appconfig()
         if self.__check_app_blocked(appconfig):
@@ -1499,7 +1502,7 @@ class Channel(chn_class.Channel):
         all_programmes = []  # (contentItemId, assetId, start_ts, is_now, is_past)
         now_ts = time.time()
 
-        interesting_cycle = is_stale  # also set True if queue non-empty
+        interesting_cycle = is_stale  # also True if "now" items remain in queue
 
         if is_stale:
             new_progloc = {"fetched_at": now_ts}
@@ -1618,7 +1621,9 @@ class Channel(chn_class.Channel):
         queue = epg_enrichment.build_enrich_queue(all_programmes, cache)
         Logger.debug("NLZIET IPTV: enrich queue has %d items", len(queue))
         if queue:
-            interesting_cycle = True
+            now_items_remain = any(e[3] == 1 for e in queue)
+            if now_items_remain or is_stale:
+                interesting_cycle = True
             epg_enrichment.fetch_and_cache(queue[:EPG_ENRICH_BATCH_SIZE], self.httpHeaders)
 
         # Adaptive backoff: slow down when idle, reset when there is work to do

@@ -36,6 +36,8 @@ from api import (
     EPG_CACHE_TTL_DAYS,
     EPG_DETAIL_CACHE_KEY,
     EPG_ENRICH_BATCH_SIZE,
+    EPG_ENRICH_QUEUE_KEY,
+    EPG_PROGLOC_CACHE_KEY,
 )
 
 # File name for the large progloc cache stored as a plain JSON file (not in
@@ -176,6 +178,24 @@ def compute_signal_delay(backoff_cycles: int) -> int:
     :rtype: int
     """
     return min(30 * (1 + backoff_cycles), 600)
+
+
+def migrate_legacy_settings() -> None:
+    """Clear stale large-value keys left by older versions of the add-on.
+
+    Older builds stored the full programme-location cache (up to 42 MB) and
+    the enrichment queue (up to 2.5 MB) inside ``settings.json`` via
+    LocalSettings.  These keys are no longer written, but the old values
+    remain in the file until explicitly cleared.  Kodi loads the entire
+    ``settings.json`` on every startup, so the bloat has a real cost.
+
+    This function is idempotent — calling it when the keys are already absent
+    is a cheap no-op.
+    """
+    for key in (EPG_PROGLOC_CACHE_KEY, EPG_ENRICH_QUEUE_KEY):
+        if AddonSettings.get_setting(key, store=LOCAL):
+            AddonSettings.set_setting(key, "", store=LOCAL)
+            Logger.info("NLZIET EPG: cleared legacy settings key '%s'", key)
 
 
 def build_enrich_queue(

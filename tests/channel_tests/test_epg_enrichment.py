@@ -291,3 +291,55 @@ class TestBackoff(unittest.TestCase):
 
     def test_compute_signal_delay_capped_at_600(self):
         self.assertEqual(epg_enrichment.compute_signal_delay(999), 600)
+
+
+class TestMigrateLegacySettings(unittest.TestCase):
+    """migrate_legacy_settings clears stale keys."""
+
+    @patch("epg_enrichment.AddonSettings")
+    def test_clears_both_legacy_keys(self, mock_settings):
+        mock_settings.get_setting.return_value = "some-data"
+        epg_enrichment.migrate_legacy_settings()
+        from api import EPG_PROGLOC_CACHE_KEY, EPG_ENRICH_QUEUE_KEY
+        calls = mock_settings.set_setting.call_args_list
+        cleared = {c.args[0] for c in calls}
+        self.assertIn(EPG_PROGLOC_CACHE_KEY, cleared)
+        self.assertIn(EPG_ENRICH_QUEUE_KEY, cleared)
+
+    @patch("epg_enrichment.AddonSettings")
+    def test_no_op_when_keys_absent(self, mock_settings):
+        mock_settings.get_setting.return_value = ""
+        epg_enrichment.migrate_legacy_settings()
+        mock_settings.set_setting.assert_not_called()
+
+
+class TestInterestingCycleLogic(unittest.TestCase):
+    """Verify the now_items_remain heuristic used in create_iptv_epg."""
+
+    def _make_queue(self, now_count=0, future_count=0, past_count=0):
+        """Return a minimal queue in the [cid, aid, ts, is_now_int] format."""
+        return (
+            [["cid", "aid", 1.0, 1]] * now_count
+            + [["cid", "aid", 1.0, 0]] * future_count
+            + [["cid", "aid", 1.0, 0]] * past_count
+        )
+
+    def test_no_items_no_interesting(self):
+        queue = self._make_queue()
+        self.assertFalse(any(e[3] == 1 for e in queue))
+
+    def test_now_items_trigger_interesting(self):
+        queue = self._make_queue(now_count=5)
+        self.assertTrue(any(e[3] == 1 for e in queue))
+
+    def test_future_only_not_interesting(self):
+        queue = self._make_queue(future_count=100)
+        self.assertFalse(any(e[3] == 1 for e in queue))
+
+    def test_past_only_not_interesting(self):
+        queue = self._make_queue(past_count=50)
+        self.assertFalse(any(e[3] == 1 for e in queue))
+
+    def test_mixed_without_now_not_interesting(self):
+        queue = self._make_queue(future_count=10, past_count=10)
+        self.assertFalse(any(e[3] == 1 for e in queue))
