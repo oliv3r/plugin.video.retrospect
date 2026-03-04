@@ -97,10 +97,9 @@ API_V9_WATCH_IN_ADVANCE = f"{_API_BASE_URL}/v9/watchinadvance"
 APPCONFIG_CACHE_KEY = "nlziet_appconfig"
 APPCONFIG_CACHE_TTL = 300          # seconds (matches server epgCacheTime default)
 
-# ── EPG enrichment cache / queue keys (stored in LocalSettings) ───────
+# ── EPG enrichment cache keys (stored in LocalSettings) ───────────────
 EPG_DETAIL_CACHE_KEY = "nlziet_epg_detail_cache"
-EPG_ENRICH_QUEUE_KEY = "nlziet_epg_enrich_queue"
-EPG_PROGLOC_CACHE_KEY = "nlziet_epg_progloc_cache"
+EPG_PROGLOC_CACHE_KEY = "nlziet_epg_progloc_cache"  # kept for migration; file-based now
 EPG_BACKOFF_CYCLES_KEY = "nlziet_epg_backoff_cycles"
 EPG_ENRICH_BATCH_SIZE = 10
 EPG_CACHE_TTL_DAYS = 3

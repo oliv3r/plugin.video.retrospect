@@ -2,7 +2,10 @@
 """Unit tests for the NLZIET EPG enrichment helpers (epg_enrichment.py)."""
 
 import json
+import os
+import shutil
 import sys
+import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, patch, call
@@ -57,27 +60,6 @@ class TestDetailCacheIO(unittest.TestCase):
         epg_enrichment.save_detail_cache(cache)
         saved = json.loads(mock_settings.set_setting.call_args[0][1])
         self.assertEqual(set(saved.keys()), {"id1", "id2"})
-
-
-class TestQueueIO(unittest.TestCase):
-    """load_enrich_queue / save_enrich_queue round-trip."""
-
-    @patch("epg_enrichment.AddonSettings")
-    def test_load_empty_queue(self, mock_settings):
-        mock_settings.get_setting.return_value = ""
-        self.assertEqual(epg_enrichment.load_enrich_queue(), [])
-
-    @patch("epg_enrichment.AddonSettings")
-    def test_save_and_load_queue(self, mock_settings):
-        queue = [["id1", "asset1", 1000.0, 1], ["id2", "asset2", 2000.0, 0]]
-        captured = []
-        mock_settings.set_setting.side_effect = lambda *a, **kw: captured.append(a[1])
-        epg_enrichment.save_enrich_queue(queue)
-
-        mock_settings.get_setting.return_value = captured[0]
-        result = epg_enrichment.load_enrich_queue()
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0][0], "id1")
 
 
 class TestBuildEnrichQueue(unittest.TestCase):
@@ -232,44 +214,45 @@ if __name__ == "__main__":
 class TestProlocCache(unittest.TestCase):
     """load_progloc_cache / save_progloc_cache round-trip and staleness."""
 
-    @patch("epg_enrichment.AddonSettings")
-    def test_load_empty_is_stale(self, mock_settings):
-        mock_settings.get_setting.return_value = ""
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        epg_enrichment._CACHE_DIR = self._tmpdir
+
+    def tearDown(self):
+        epg_enrichment._CACHE_DIR = None
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_load_empty_is_stale(self):
+        # No file → stale
         cache, is_stale = epg_enrichment.load_progloc_cache()
         self.assertEqual(cache, {})
         self.assertTrue(is_stale)
 
-    @patch("epg_enrichment.AddonSettings")
-    def test_load_fresh_not_stale(self, mock_settings):
+    def test_load_fresh_not_stale(self):
         data = {"fetched_at": time.time(), "2026-01-01": []}
-        mock_settings.get_setting.return_value = json.dumps(data)
+        epg_enrichment.save_progloc_cache(data)
         cache, is_stale = epg_enrichment.load_progloc_cache()
         self.assertFalse(is_stale)
         self.assertIn("2026-01-01", cache)
 
-    @patch("epg_enrichment.AddonSettings")
-    def test_load_expired_is_stale(self, mock_settings):
+    def test_load_expired_is_stale(self):
         data = {"fetched_at": time.time() - 400, "2026-01-01": []}  # > 300s TTL
-        mock_settings.get_setting.return_value = json.dumps(data)
+        epg_enrichment.save_progloc_cache(data)
         _, is_stale = epg_enrichment.load_progloc_cache()
         self.assertTrue(is_stale)
 
-    @patch("epg_enrichment.AddonSettings")
-    def test_load_invalid_json_is_stale(self, mock_settings):
-        mock_settings.get_setting.return_value = "not-json"
+    def test_load_invalid_json_is_stale(self):
+        path = os.path.join(self._tmpdir, epg_enrichment._PROGLOC_CACHE_FILE)
+        with open(path, "w") as fh:
+            fh.write("not-json")
         cache, is_stale = epg_enrichment.load_progloc_cache()
         self.assertEqual(cache, {})
         self.assertTrue(is_stale)
 
-    @patch("epg_enrichment.AddonSettings")
-    def test_save_round_trips(self, mock_settings):
-        saved = {}
-        mock_settings.set_setting.side_effect = lambda k, v, store: saved.update({k: v})
+    def test_save_round_trips(self):
         data = {"fetched_at": time.time(), "2026-01-01": [["cid1", "aid1", 1000.0, 2000.0]]}
         epg_enrichment.save_progloc_cache(data)
-        from api import EPG_PROGLOC_CACHE_KEY
-        self.assertIn(EPG_PROGLOC_CACHE_KEY, saved)
-        loaded = json.loads(saved[EPG_PROGLOC_CACHE_KEY])
+        loaded, _ = epg_enrichment.load_progloc_cache()
         self.assertIn("2026-01-01", loaded)
 
 
