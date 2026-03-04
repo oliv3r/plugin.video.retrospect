@@ -36,8 +36,7 @@ from api import (
     EPG_CACHE_TTL_DAYS,
     EPG_DETAIL_CACHE_KEY,
     EPG_ENRICH_BATCH_SIZE,
-    EPG_ENRICH_QUEUE_KEY,
-    EPG_PROGLOC_CACHE_KEY,
+    EPG_PROGLOC_CACHE_TTL,
 )
 
 # File name for the large progloc cache stored as a plain JSON file (not in
@@ -106,11 +105,10 @@ def load_progloc_cache() -> Tuple[Dict, bool]:
     """Load the programme-location cache from its JSON cache file.
 
     :return: Tuple of (cache_dict, is_stale).  ``is_stale`` is True when the
-             cache was absent or older than ``APPCONFIG_CACHE_TTL`` seconds
+             cache was absent or older than ``EPG_PROGLOC_CACHE_TTL`` seconds
              (caller should re-fetch and treat the cycle as "interesting").
     :rtype: tuple
     """
-    from api import APPCONFIG_CACHE_TTL  # avoid circular import at module level
     path = _get_cache_file(_PROGLOC_CACHE_FILE)
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -123,7 +121,7 @@ def load_progloc_cache() -> Tuple[Dict, bool]:
         return {}, True
     fetched_at = data.get("fetched_at", 0)
     age = time.time() - fetched_at
-    is_stale = age > APPCONFIG_CACHE_TTL
+    is_stale = age > EPG_PROGLOC_CACHE_TTL
     date_keys = sum(1 for k in data if k != "fetched_at" and k != "subscribed_channels")
     if is_stale:
         Logger.debug("NLZIET EPG: progloc cache stale (age=%.0fs, %d date keys)", age, date_keys)
@@ -178,24 +176,6 @@ def compute_signal_delay(backoff_cycles: int) -> int:
     :rtype: int
     """
     return min(30 * (1 + backoff_cycles), 600)
-
-
-def migrate_legacy_settings() -> None:
-    """Clear stale large-value keys left by older versions of the add-on.
-
-    Older builds stored the full programme-location cache (up to 42 MB) and
-    the enrichment queue (up to 2.5 MB) inside ``settings.json`` via
-    LocalSettings.  These keys are no longer written, but the old values
-    remain in the file until explicitly cleared.  Kodi loads the entire
-    ``settings.json`` on every startup, so the bloat has a real cost.
-
-    This function is idempotent — calling it when the keys are already absent
-    is a cheap no-op.
-    """
-    for key in (EPG_PROGLOC_CACHE_KEY, EPG_ENRICH_QUEUE_KEY):
-        if AddonSettings.get_setting(key, store=LOCAL):
-            AddonSettings.set_setting(key, "", store=LOCAL)
-            Logger.info("NLZIET EPG: cleared legacy settings key '%s'", key)
 
 
 def build_enrich_queue(

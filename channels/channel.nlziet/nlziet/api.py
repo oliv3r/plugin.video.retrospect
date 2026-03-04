@@ -99,9 +99,8 @@ APPCONFIG_CACHE_TTL = 300          # seconds (matches server epgCacheTime defaul
 
 # ── EPG enrichment cache keys (stored in LocalSettings) ───────────────
 EPG_DETAIL_CACHE_KEY = "nlziet_epg_detail_cache"
-EPG_PROGLOC_CACHE_KEY = "nlziet_epg_progloc_cache"   # legacy; cleared by migrate_legacy_settings()
-EPG_ENRICH_QUEUE_KEY = "nlziet_epg_enrich_queue"    # legacy; cleared by migrate_legacy_settings()
 EPG_BACKOFF_CYCLES_KEY = "nlziet_epg_backoff_cycles"
 EPG_ENRICH_BATCH_SIZE = 10
 EPG_CACHE_TTL_DAYS = 3
+EPG_PROGLOC_CACHE_TTL = 1800       # seconds (30 min; programme schedules change slowly)
 EPG_SIGNAL_FILE_NAME = "nlziet_epg_signal_at"   # plain file in addon-data dir

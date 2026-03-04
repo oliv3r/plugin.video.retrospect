@@ -236,7 +236,7 @@ class TestProlocCache(unittest.TestCase):
         self.assertIn("2026-01-01", cache)
 
     def test_load_expired_is_stale(self):
-        data = {"fetched_at": time.time() - 400, "2026-01-01": []}  # > 300s TTL
+        data = {"fetched_at": time.time() - 1900, "2026-01-01": []}  # > 1800s TTL
         epg_enrichment.save_progloc_cache(data)
         _, is_stale = epg_enrichment.load_progloc_cache()
         self.assertTrue(is_stale)
@@ -291,27 +291,6 @@ class TestBackoff(unittest.TestCase):
 
     def test_compute_signal_delay_capped_at_600(self):
         self.assertEqual(epg_enrichment.compute_signal_delay(999), 600)
-
-
-class TestMigrateLegacySettings(unittest.TestCase):
-    """migrate_legacy_settings clears stale keys."""
-
-    @patch("epg_enrichment.AddonSettings")
-    def test_clears_both_legacy_keys(self, mock_settings):
-        mock_settings.get_setting.return_value = "some-data"
-        epg_enrichment.migrate_legacy_settings()
-        from api import EPG_PROGLOC_CACHE_KEY, EPG_ENRICH_QUEUE_KEY
-        calls = mock_settings.set_setting.call_args_list
-        cleared = {c.args[0] for c in calls}
-        self.assertIn(EPG_PROGLOC_CACHE_KEY, cleared)
-        self.assertIn(EPG_ENRICH_QUEUE_KEY, cleared)
-
-    @patch("epg_enrichment.AddonSettings")
-    def test_no_op_when_keys_absent(self, mock_settings):
-        mock_settings.get_setting.return_value = ""
-        epg_enrichment.migrate_legacy_settings()
-        mock_settings.set_setting.assert_not_called()
-
 
 class TestInterestingCycleLogic(unittest.TestCase):
     """Verify the queue-empty/now_items heuristics used in create_iptv_epg.

@@ -1473,9 +1473,6 @@ class Channel(chn_class.Channel):
             Logger.warning("NLZIET IPTV: Not authenticated, returning empty EPG")
             return {}
 
-        # One-time migration: clear stale large keys from settings.json.
-        epg_enrichment.migrate_legacy_settings()
-
         # Load appconfig (cached); abort if the server has blocked the app.
         appconfig = self.__load_appconfig()
         if self.__check_app_blocked(appconfig):
