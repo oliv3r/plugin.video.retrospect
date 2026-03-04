@@ -158,6 +158,9 @@ class LanguageHelper(object):
     CleanupCache = 30604
     CleanupConfirmation = 30605
 
+    DeviceSetupQrInstruction = 30610
+    QrAddonMissing = 30611
+
     Today = 30551
     Yesterday = 30552
     DayBeforeYesterday = 30553
