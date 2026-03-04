@@ -163,6 +163,13 @@ class LanguageHelper(object):
     NetworkLoginError = 30610
     MissingUsername = 30611
     MissingPassword = 30612
+    DeviceSetupTitle = 30613
+    DeviceSetupVisit = 30614
+    DeviceSetupEnterCode = 30615
+    ManualLogin = 30616
+    DeviceSetupQrInstruction = 30617
+    QrAddonMissing = 30618
+    LogOffError = 30619
 
     Today = 30551
     Yesterday = 30552

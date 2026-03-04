@@ -1305,3 +1305,31 @@ msgstr ""
 msgctxt "#30612"
 msgid "Missing password"
 msgstr ""
+
+msgctxt "#30613"
+msgid "Set up device"
+msgstr ""
+
+msgctxt "#30614"
+msgid "To set up your device, visit:"
+msgstr ""
+
+msgctxt "#30615"
+msgid "and enter this code:"
+msgstr ""
+
+msgctxt "#30616"
+msgid "Log in manually"
+msgstr ""
+
+msgctxt "#30617"
+msgid "Scan this QR code to add your device."
+msgstr ""
+
+msgctxt "#30618"
+msgid "QR code addon not installed.[CR]Install 'script.module.qrcode' for QR code support."
+msgstr ""
+
+msgctxt "#30619"
+msgid "Log off incomplete. Local credentials cleared, but the server could not be notified."
+msgstr ""
