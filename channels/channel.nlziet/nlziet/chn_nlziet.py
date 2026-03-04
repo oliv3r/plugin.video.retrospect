@@ -1619,7 +1619,7 @@ class Channel(chn_class.Channel):
                 elif is_movie:
                     epg_item["genre"] = GENRE_MAP.get("Film", "Film")
 
-                if is_replay and s_ts <= now_ts:
+                if is_replay and e_ts <= now_ts:
                     replay_item = self.__create_replay_item(asset_id, title, channel_id)
                     if replay_item:
                         media_items.append(replay_item)
