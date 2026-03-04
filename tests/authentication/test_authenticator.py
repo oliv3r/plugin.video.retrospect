@@ -633,6 +633,15 @@ class TestAuthenticatorUnit(unittest.TestCase):
             a = Authenticator(h)
             a.log_off("user@example.com")  # should not raise
 
+    def test_log_off_handler_failure_shows_notification(self) -> None:
+        h = _MockAuthHandler("test.realm", active_user="user@example.com")
+        with patch.object(h, "log_off", return_value=False), \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_notification") \
+                as mock_notify:
+            a = Authenticator(h, channel_name="My Channel")
+            a.log_off("user@example.com")
+        mock_notify.assert_called_once()
+
     def test_log_off_without_force_same_user_calls_handler(self) -> None:
         h = _MockAuthHandler("test.realm", active_user="user@example.com")
         with patch.object(h, "log_off", return_value=True) as mock_log_off:

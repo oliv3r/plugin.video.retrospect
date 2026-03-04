@@ -1,9 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+from enum import Enum
 from typing import Optional
 
 from resources.lib.addonsettings import AddonSettings
 from resources.lib.addonsettings import LOCAL
 from resources.lib.authentication.authenticationresult import AuthenticationResult
+
+
+class DeviceAuthResult(Enum):
+    """ Outcome of a device authorization poll or dialog interaction. """
+
+    SUCCESS = "success"
+    PENDING = "pending"
+    MANUAL = "manual"
+    TIMEOUT = "timeout"
+    CANCELED = "canceled"
+    ERROR = "error"
 
 
 class AuthenticationHandler(object):

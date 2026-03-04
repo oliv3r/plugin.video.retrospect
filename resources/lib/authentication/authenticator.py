@@ -201,6 +201,9 @@ class Authenticator(object):
                 Logger.debug("Logged off successfully")
             else:
                 Logger.error("Log off failed")
+                XbmcWrapper.show_notification(
+                    self.__channel_name, LanguageHelper.LogOffError,
+                    notification_type=XbmcWrapper.Warning)
 
     def _get_username(self) -> Optional[str]:
         """ Read the stored username.
