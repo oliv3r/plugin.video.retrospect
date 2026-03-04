@@ -44,7 +44,7 @@ from api import (
     API_V9_SERIES_EPISODES, API_V9_SERIES_PLAY, API_V9_SERIES_PREFIX,
     API_V9_SERIES_SEASON_EPISODES,
     API_V9_STREAM_HANDSHAKE, API_V9_TRACKED_SERIES,
-    API_V9_VOD_HANDSHAKE, API_V9_WATCH_IN_ADVANCE,
+    API_V9_VOD_HANDSHAKE, API_V9_CATCHUP_HANDSHAKE, API_V9_CATCHUP_PREFIX, API_V9_WATCH_IN_ADVANCE,
     APPCONFIG_CACHE_KEY, APPCONFIG_CACHE_TTL,
     EPG_ENRICH_BATCH_SIZE, EPG_SIGNAL_FILE_NAME,
 )
@@ -195,6 +195,11 @@ class Channel(chn_class.Channel):
                               name="VOD stream resolver",
                               requires_logon=True,
                               updater=self.update_vod_item)
+
+        self._add_data_parser(API_V9_CATCHUP_PREFIX,
+                              name="Catchup/replay stream resolver",
+                              requires_logon=True,
+                              updater=self.update_replay_item)
 
     # -- Authentication ----------------------------------------------------
 
@@ -519,6 +524,20 @@ class Channel(chn_class.Channel):
                 "inputstream.adaptive.manifest_config",
                 json.dumps({"live_offset": start_offset}))
         return item
+
+    def update_replay_item(self, item: MediaItem) -> MediaItem:
+        """Fetch the DASH stream URL for a catchup/replay programme.
+
+        Uses the v9 ``context=Epg`` handshake with the content item ID
+        and channel baked into the item URL.
+
+        :param MediaItem item: The item to update with stream info.
+        :return: The updated item.
+
+        """
+
+        Logger.debug("Updating catchup stream for: %s", item.name)
+        return self.__handle_stream_handshake(item, item.url)
 
     # -- VOD content (movies, series, trending) ----------------------------
 
@@ -1620,7 +1639,7 @@ class Channel(chn_class.Channel):
                     epg_item["genre"] = GENRE_MAP.get("Film", "Film")
 
                 if is_replay and e_ts <= now_ts:
-                    replay_item = self.__create_replay_item(asset_id, title, channel_id)
+                    replay_item = self.__create_replay_item(cid, asset_id, title, channel_id)
                     if replay_item:
                         media_items.append(replay_item)
                         epg_item["stream"] = parameter_parser.create_action_url(
@@ -1628,7 +1647,7 @@ class Channel(chn_class.Channel):
                             item=replay_item, store_id=parent.guid)
 
                 if is_watch_ahead and not is_replay and s_ts > now_ts:
-                    wa_item = self.__create_replay_item(asset_id, title, channel_id)
+                    wa_item = self.__create_replay_item(cid, asset_id, title, channel_id)
                     if wa_item:
                         media_items.append(wa_item)
                         epg_item["stream"] = parameter_parser.create_action_url(
@@ -1692,25 +1711,28 @@ class Channel(chn_class.Channel):
         Logger.info("NLZIET IPTV: create_iptv_epg returning EPG for %d channels", len(iptv_epg))
         return iptv_epg
 
-    def __create_replay_item(self, asset_id, title, channel_id):
-        """Create a playable MediaItem for an EPG replay stream.
+    def __create_replay_item(self, cid, asset_id, title, channel_id):
+        """Create a playable MediaItem for an EPG replay/catchup stream.
 
-        :param str asset_id: The asset ID for the replay stream.
+        Uses ``context=Epg`` with the content item ID (cid) and channel,
+        matching the NLZIET web app's replay handshake pattern.
+
+        :param str cid: The content item ID (from progloc, index 0).
+        :param str asset_id: The asset ID (unused in URL).
         :param str title: The programme title.
-        :param str channel_id: The channel ID for the replay URL.
-        :return: A MediaItem or None if no assetId is available.
+        :param str channel_id: The channel ID (e.g. ``npo3``).
+        :return: A MediaItem or None if cid or channel_id is unavailable.
         :rtype: MediaItem|None
 
         """
 
-        if not asset_id:
+        if not cid or not channel_id:
             return None
 
-        replay_url = API_V9_EPG_LIVE_CHANNEL.format(channel_id)
+        replay_url = API_V9_CATCHUP_HANDSHAKE.format(channel_id, cid)
         item = MediaItem(title, replay_url, media_type=mediatype.VIDEO)
         item.isGeoLocked = True
         item.isDrmProtected = True
-        item.metaData["asset_id"] = asset_id
         item.HttpHeaders = self.httpHeaders
         return item
 
