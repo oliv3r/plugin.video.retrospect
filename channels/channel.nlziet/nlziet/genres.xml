@@ -6,7 +6,7 @@
   DVB hex codes.  Discovered and merged on top of resources/data/pvr_genres.xml
   by retroservice._merge_genre_xmls().
 
-  version: 2
+  version: 3
 -->
 
 <genres>
@@ -36,10 +36,14 @@
   <genre genreId="0x50">Jeugd/Familie</genre>
   <genre genreId="0x50">Kids</genre>
 
+  <!-- ARTS / CULTURE -->
+  <genre genreId="0x70">Kunst/cultuur</genre>
+
   <!-- MUSIC / BALLET / DANCE -->
   <genre genreId="0x60">Muziek</genre>
 
   <!-- LEISURE / HOBBIES -->
+  <genre genreId="0xA0">Lifestyle</genre>
   <genre genreId="0xA4">Gezondheid/opvoeding</genre>
   <genre genreId="0xA5">Culinair</genre>
 </genres>

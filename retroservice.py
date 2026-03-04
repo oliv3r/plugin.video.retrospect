@@ -4,6 +4,7 @@ import glob as _glob
 import os
 import re
 import shutil
+import threading
 import time
 import xml.etree.ElementTree as ET
 
@@ -16,7 +17,7 @@ _ADDON_DATA = xbmcvfs.translatePath(_ADDON.getAddonInfo("profile"))
 _ADDON_PATH = xbmcvfs.translatePath(_ADDON.getAddonInfo("path"))
 _EPG_SIGNAL_FILE = os.path.join(_ADDON_DATA, "nlziet_epg_signal_at")
 _EPG_PROGLOC_KEY = "nlziet_epg_progloc_cache"
-_PVR_GENRES_VERSION = 4
+_PVR_GENRES_VERSION = 7
 
 
 def _log(msg, level=xbmc.LOGDEBUG):
@@ -134,10 +135,7 @@ def _configure_pvr_instances(pvr_data):
 
     :param str pvr_data: pvr.iptvsimple profile directory.
     """
-    genres_path = (
-        "special://userdata/addon_data/pvr.iptvsimple"
-        "/genres/genreTextMappings/genres.xml"
-    )
+    genres_path = "special://userdata/addon_data/plugin.video.retrospect/genres.xml"
 
     for instance_file in _glob.glob(os.path.join(pvr_data, "instance-settings-*.xml")):
         try:
@@ -151,6 +149,7 @@ def _configure_pvr_instances(pvr_data):
             continue
 
         original = content
+        content = _set_xml_setting(content, "kodi_addon_instance_name", "Retrospect")
         content = _set_xml_setting(content, "useEpgGenreText", "true")
         content = _set_xml_setting(content, "genresPathType", "0")
         content = _set_xml_setting(content, "genresPath", genres_path)
@@ -174,18 +173,14 @@ def _setup_pvr_genres():
     entries override same-genreId entries from the base file, so each
     channel controls only the genres it actually emits.
 
+    The merged file is written to Retrospect's own addon-data directory
+    (``special://userdata/addon_data/plugin.video.retrospect/genres.xml``)
+    so it is never overwritten by pvr.iptvsimple's own Rytec import.
+
     Also enables ``useEpgGenreText`` in any pvr.iptvsimple instance that
     uses the service.iptv.manager playlist.
     """
-    try:
-        pvr_addon = xbmcaddon.Addon("pvr.iptvsimple")
-    except RuntimeError:
-        _log("pvr.iptvsimple not installed — skipping genre setup")
-        return
-
-    pvr_data = xbmcvfs.translatePath(pvr_addon.getAddonInfo("profile"))
-    target_dir = os.path.join(pvr_data, "genres", "genreTextMappings")
-    target_file = os.path.join(target_dir, "genres.xml")
+    target_file = os.path.join(_ADDON_DATA, "genres.xml")
 
     version_marker = "version: %d" % _PVR_GENRES_VERSION
     if os.path.isfile(target_file):
@@ -194,7 +189,7 @@ def _setup_pvr_genres():
                 head = fh.read(512)
             if version_marker in head:
                 _log("pvr_genres v%d already installed" % _PVR_GENRES_VERSION)
-                _configure_pvr_instances(pvr_data)
+                _configure_pvr_instances_if_available()
                 return
         except OSError:
             pass
@@ -203,7 +198,6 @@ def _setup_pvr_genres():
     if not merged:
         return
 
-    os.makedirs(target_dir, exist_ok=True)
     try:
         with open(target_file, "w", encoding="utf-8") as fh:
             fh.write(merged)
@@ -213,6 +207,17 @@ def _setup_pvr_genres():
         _log("Failed to write %s: %s" % (target_file, e), xbmc.LOGWARNING)
         return
 
+    _configure_pvr_instances_if_available()
+
+
+def _configure_pvr_instances_if_available():
+    """Call ``_configure_pvr_instances`` if pvr.iptvsimple is installed."""
+    try:
+        pvr_addon = xbmcaddon.Addon("pvr.iptvsimple")
+    except RuntimeError:
+        _log("pvr.iptvsimple not installed — skipping instance config")
+        return
+    pvr_data = xbmcvfs.translatePath(pvr_addon.getAddonInfo("profile"))
     _configure_pvr_instances(pvr_data)
 
 
@@ -287,6 +292,33 @@ class RetroService(xbmc.Monitor):
         super(RetroService, self).__init__()
         self._initial_signal_sent = False
         self._tick_count = 0
+
+    def onNotification(self, sender, method, data):  # NOSONAR
+        """Re-configure pvr.iptvsimple genre settings whenever it is enabled.
+
+        Fires when any Kodi addon is enabled (e.g. installed via the
+        Retrospect settings "Install IPTV Manager" button).  We act on:
+
+        - ``pvr.iptvsimple``: freshly installed or re-enabled — configure
+          immediately.
+        - ``service.iptv.manager``: creates the pvr.iptvsimple instance
+          asynchronously; wait 5 s so the instance file exists before we
+          try to configure it.
+        """
+        if method != "System.OnAddonEnabled":
+            return
+        if "pvr.iptvsimple" in (data or ""):
+            _log("pvr.iptvsimple enabled — reconfiguring pvr genres", xbmc.LOGINFO)
+            _setup_pvr_genres()
+        elif "service.iptv.manager" in (data or ""):
+            _log("service.iptv.manager enabled — scheduling pvr genre reconfigure", xbmc.LOGINFO)
+            threading.Thread(target=self._delayed_pvr_setup, daemon=True).start()
+
+    @staticmethod
+    def _delayed_pvr_setup():
+        """Wait briefly, then reconfigure pvr.iptvsimple instances."""
+        time.sleep(5)
+        _setup_pvr_genres()
 
     def run(self):
         _log("started", xbmc.LOGINFO)
