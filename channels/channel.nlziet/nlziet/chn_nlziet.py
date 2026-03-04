@@ -1741,7 +1741,12 @@ class Channel(chn_class.Channel):
         try:
             raw = UriHandler.open(API_V7_CURRENT_TIME, additional_headers=self.httpHeaders)
             if raw:
-                return float(raw.strip()) / 1000.0
+                server_ts = float(raw.strip()) / 1000.0
+                local_ts = time.time()
+                delta = abs(server_ts - local_ts)
+                if delta <= 300:
+                    return server_ts
+                Logger.debug("NLZIET: server time delta %.0fs > 300s, using local clock", delta)
         except Exception as e:
             Logger.debug("NLZIET: server time fetch failed, using local clock: %s", e)
         return time.time()

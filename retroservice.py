@@ -232,6 +232,26 @@ def _has_epg_data():
     return result
 
 
+def _has_epg_programme_data():
+    """Return True if the last IPTV Manager EPG file contains at least one programme entry.
+
+    If the file is missing or empty (e.g. was written during a network outage),
+    returns False so the service can trigger an immediate refresh.
+    """
+    try:
+        epg_path = xbmcvfs.translatePath(
+            "special://userdata/addon_data/service.iptv.manager/epg.xml")
+        if not os.path.isfile(epg_path):
+            return False
+        with open(epg_path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if "<programme" in line:
+                    return True
+        return False
+    except OSError:
+        return False
+
+
 def _check_epg_signal():
     """If the signal file has matured, fire an IPTV Manager refresh and remove it."""
     if not os.path.isfile(_EPG_SIGNAL_FILE):
@@ -276,16 +296,26 @@ class RetroService(xbmc.Monitor):
         _log("tick #%d" % self._tick_count)
         # Relay any signal written by create_iptv_epg
         _check_epg_signal()
-        # On first tick: trigger initial EPG fetch if no data yet
-        if not self._initial_signal_sent and not _has_epg_data():
-            if not os.path.isfile(_EPG_SIGNAL_FILE):
-                try:
-                    with open(_EPG_SIGNAL_FILE, "w") as fh:
-                        fh.write(str(time.time() + 5))
-                    _log("no EPG data yet — wrote initial trigger to %s" % _EPG_SIGNAL_FILE,
-                         xbmc.LOGINFO)
-                except OSError as e:
-                    _log("failed to write initial trigger: %s" % e, xbmc.LOGWARNING)
+        # On first tick: trigger initial EPG fetch if no data yet, or if the
+        # last-written EPG file contains no programme entries (e.g. was written
+        # during a network outage and is stuck empty).
+        if not self._initial_signal_sent:
+            if not _has_epg_data():
+                # Progloc cache never written — delay 5 s so the channel has
+                # time to initialise before the first refresh.
+                if not os.path.isfile(_EPG_SIGNAL_FILE):
+                    try:
+                        with open(_EPG_SIGNAL_FILE, "w") as fh:
+                            fh.write(str(time.time() + 5))
+                        _log("no EPG data yet — wrote initial trigger to %s" % _EPG_SIGNAL_FILE,
+                             xbmc.LOGINFO)
+                    except OSError as e:
+                        _log("failed to write initial trigger: %s" % e, xbmc.LOGWARNING)
+            elif not _has_epg_programme_data():
+                # Cache exists but epg.xml has no programmes — trigger immediately.
+                _log("EPG cache present but epg.xml has no programmes — forcing refresh",
+                     xbmc.LOGINFO)
+                _iptv_manager_signal()
             self._initial_signal_sent = True
 
 
