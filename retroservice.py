@@ -16,7 +16,7 @@ _ADDON_DATA = xbmcvfs.translatePath(_ADDON.getAddonInfo("profile"))
 _ADDON_PATH = xbmcvfs.translatePath(_ADDON.getAddonInfo("path"))
 _EPG_SIGNAL_FILE = os.path.join(_ADDON_DATA, "nlziet_epg_signal_at")
 _EPG_PROGLOC_KEY = "nlziet_epg_progloc_cache"
-_PVR_GENRES_VERSION = 3
+_PVR_GENRES_VERSION = 4
 
 
 def _log(msg, level=xbmc.LOGDEBUG):
@@ -35,8 +35,9 @@ def _merge_genre_xmls():
     """Merge base pvr_genres.xml with any per-channel genres.xml overrides.
 
     Channels place a ``genres.xml`` alongside their channel module
-    (e.g. ``channels/channel.nlziet/nlziet/genres.xml``).  Entries in
-    channel files override same-genreId entries from the base file.
+    (e.g. ``channels/channel.nlziet/nlziet/genres.xml``).  The merged
+    dict is keyed by display text, so multiple texts may share a genreId
+    (e.g. both "Documentary" and "Documentaire" → 0x23).
 
     :return: Merged XML string, or None on error.
     :rtype: str|None
@@ -52,12 +53,14 @@ def _merge_genre_xmls():
         _log("Failed to parse pvr_genres.xml: %s" % e, xbmc.LOGWARNING)
         return None
 
-    # Ordered: genreId -> display text.  Base first; channels override.
+    # Ordered: display text -> genreId.  Keyed by text so multiple texts
+    # can share the same genreId (e.g. "Documentaire" and "Documentary"
+    # both → 0x23).  Later entries override earlier ones for the same text.
     genres = {}
     for elem in base_root.findall("genre"):
         gid = elem.get("genreId")
         if gid and elem.text:
-            genres[gid] = elem.text.strip()
+            genres[elem.text.strip()] = gid
 
     # Discover per-channel genres.xml files and merge
     channels_dir = os.path.join(_ADDON_PATH, "channels")
@@ -72,7 +75,7 @@ def _merge_genre_xmls():
                 for elem in croot.findall("genre"):
                     gid = elem.get("genreId")
                     if gid and elem.text:
-                        genres[gid] = elem.text.strip()
+                        genres[elem.text.strip()] = gid
                         count += 1
                 _log("Merged %d genre entries from %s" % (count, path))
             except ET.ParseError as e:
@@ -90,7 +93,7 @@ def _merge_genre_xmls():
         '  <name>Retrospect Genre Mappings</name>',
         '',
     ]
-    for gid, text in genres.items():
+    for text, gid in genres.items():
         lines.append('  <genre genreId="%s">%s</genre>' % (gid, text))
     lines += ['</genres>', '']
     return '\n'.join(lines)
