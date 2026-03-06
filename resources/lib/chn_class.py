@@ -28,6 +28,12 @@ class Channel:
     main class from which all channels inherit
     """
 
+    service_interval = None  # type: Optional[int]
+    """ Set to a positive number of seconds to opt this channel into periodic
+    service callbacks via :meth:`on_service`. ``None`` (the default) means
+    the channel does not participate.
+    """
+
     def __init__(self, channel_info):
         """ Initialisation of the class.
 
@@ -846,6 +852,17 @@ class Channel:
             return True
 
         return False
+
+    def on_service(self) -> None:
+        """ Called by the background service every ``service_interval`` seconds.
+
+        Override in a subclass to perform periodic background work such as
+        token refresh. The default implementation is a no-op.
+
+        Only called when ``service_interval`` is set to a positive integer.
+
+        """
+        pass
 
     def get_default_cache_path(self):
         """ Returns the default cache path for this channel.
