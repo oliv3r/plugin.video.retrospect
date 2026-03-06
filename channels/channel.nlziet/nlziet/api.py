@@ -13,3 +13,22 @@ Naming convention
 
 # -- v7 -----------------------------------------------------------------------
 API_V7_APPCONFIG = "/v7/appconfig"
+
+# -- v8 -----------------------------------------------------------------------
+API_V8_PROFILE = "/v8/profile"
+
+# -- v9 -----------------------------------------------------------------------
+API_V9_EPG_LIVE = "/v9/epg/programlocations/live"
+API_V9_EPG_LIVE_PREFIX = "/v9/epg/programlocations/live"
+
+API_V9_EPG_LIVE_CHANNEL = "/v9/epg/programlocations/live?channel={}"
+
+API_V9_LIVE_HANDSHAKE = (
+    "/v9/stream/handshake"
+    "?context=Live"
+    "&channel={}"
+    "&drmType=Widevine"
+    "&sourceType=Dash"
+    "&playerName=BitmovinWeb"
+    "&offsetType=Live"
+)
