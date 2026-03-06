@@ -1,0 +1,19 @@
+{
+  "channels": [
+    {
+      "guid": "89E7B29E-6356-4276-A435-5FA915377C2C",
+      "name": "NLZIET",
+      "description": {
+          "en": "Watch online TV the way you want.",
+          "nl": "Online tv kijken zoals jij dat wilt."
+      },
+      "icon": "nlzieticon.png",
+      "category": "National",
+      "sortorder": 2,
+      "language": "nl",
+      "hasIptv": true,
+      "fanart": "nlzietfanart.jpg",
+      "poster": "nlzietposter.png"
+    }
+  ]
+}
