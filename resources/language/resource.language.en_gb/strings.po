@@ -1301,3 +1301,59 @@ msgstr ""
 msgctxt "#30611"
 msgid "QR code addon not installed.[CR]Install 'script.module.qrcode' for QR code support."
 msgstr ""
+
+msgctxt "#30612"
+msgid "Login failed. Please check your credentials."
+msgstr ""
+
+msgctxt "#30613"
+msgid "Session expired. Please log in again."
+msgstr ""
+
+msgctxt "#30614"
+msgid "Logged out successfully."
+msgstr ""
+
+msgctxt "#30615"
+msgid "Please log in first."
+msgstr ""
+
+msgctxt "#30616"
+msgid "Account blocked."
+msgstr ""
+
+msgctxt "#30617"
+msgid "Select profile"
+msgstr ""
+
+msgctxt "#30618"
+msgid "Set up device"
+msgstr ""
+
+msgctxt "#30619"
+msgid "Visit [B]{0}[/B] on your phone or computer."
+msgstr ""
+
+msgctxt "#30620"
+msgid "Enter code: [B]{0}[/B]"
+msgstr ""
+
+msgctxt "#30621"
+msgid "Device setup failed. Please try again."
+msgstr ""
+
+msgctxt "#30622"
+msgid "Log in manually"
+msgstr ""
+
+msgctxt "#30623"
+msgid "Connection error. Please check your internet connection."
+msgstr ""
+
+msgctxt "#30624"
+msgid "Maximum number of streams reached."
+msgstr ""
+
+msgctxt "#30625"
+msgid "Welcome, {0}!"
+msgstr ""
