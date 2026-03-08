@@ -46,6 +46,8 @@ jobs:
           _DPLAY_PASSWORD: ${{ secrets.DplayPassword }}
           RTLXL_USERNAME: ${{ secrets.RtlXlUsername }}
           RTLXL_PASSWORD: ${{ secrets.RtlXlPassword }}
+          NLZIET_USERNAME: ${{ secrets.NlzietUsername }}
+          NLZIET_PASSWORD: ${{ secrets.NlzietPassword }}
           KODI_INTERACTIVE: 0
           KODI_HOME: ${{ github.workspace }}/tests/home
           PYTHONPATH: ${{ github.workspace }}/kodi.emulator.ascii
