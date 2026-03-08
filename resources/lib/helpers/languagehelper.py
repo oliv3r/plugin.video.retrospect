@@ -161,6 +161,23 @@ class LanguageHelper(object):
     DeviceSetupQrInstruction = 30610
     QrAddonMissing = 30611
 
+    LoginFailed = 30612
+    SessionExpired = 30613
+    LoggedOutSuccessfully = 30614
+    LoginFirst = 30615
+    AccountBlocked = 30616
+    SelectProfile = 30617
+    DeviceSetupTitle = 30618
+    DeviceSetupVisit = 30619
+    DeviceSetupEnterCode = 30620
+    DeviceSetupFailed = 30621
+    ManualLogin = 30622
+    ConnectionError = 30623
+    MaxStreamsReached = 30624
+    WelcomeUser = 30625
+    UnknownBlockReason = 30626
+    UnknownUser = 30627
+
     Today = 30551
     Yesterday = 30552
     DayBeforeYesterday = 30553
