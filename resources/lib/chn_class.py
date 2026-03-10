@@ -212,8 +212,9 @@ class Channel:
 
         if [p for p in data_parsers if p.LogOnRequired]:
             Logger.info("One or more dataparsers require logging in.")
-            self.loggedOn = self.log_on()
-            if not self.loggedOn:
+            log_result = self.log_on()
+            self.loggedOn = bool(log_result)
+            if log_result is False:
                 Logger.warning("Could not log on for: %s", self)
                 title = LanguageHelper.get_localized_string(LanguageHelper.LoginErrorTitle)
                 text = LanguageHelper.get_localized_string(LanguageHelper.LoginErrorText)
@@ -221,6 +222,9 @@ class Channel:
                     title, text, display_time=2000,
                     notification_type=XbmcWrapper.Error,
                     logger=Logger.instance())
+                return None
+            elif not self.loggedOn:
+                Logger.debug("Log on was cancelled/skipped for: %s", self)
                 return None
 
         # now set the headers here and not earlier in case they might have been update by the logon
@@ -516,14 +520,17 @@ class Channel:
 
         if data_parser.LogOnRequired:
             Logger.info("One or more dataparsers require logging in.")
-            self.loggedOn = self.log_on()
-            if not self.loggedOn:
+            log_result = self.log_on()
+            self.loggedOn = bool(log_result)
+            if log_result is False:
                 Logger.warning("Could not log on for: %s", self)
                 title = LanguageHelper.get_localized_string(LanguageHelper.LoginErrorTitle)
                 text = LanguageHelper.get_localized_string(LanguageHelper.LoginErrorText)
                 XbmcWrapper.show_notification(
                     title, text, display_time=2000, notification_type=XbmcWrapper.Error, logger=Logger.instance())
                 # XbmcWrapper.show_dialog(title, text)
+            elif not self.loggedOn:
+                Logger.debug("Log on was cancelled/skipped for: %s", self)
 
         Logger.debug("Processing Updater from %s", data_parser)
         return data_parser.Updater(item)
