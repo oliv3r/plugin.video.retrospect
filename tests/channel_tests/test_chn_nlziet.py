@@ -18,6 +18,7 @@ if not hasattr(_xbmcgui, "WindowXMLDialog"):
     sys.modules["xbmcgui"].WindowXMLDialog = _FakeWindowXMLDialog
 
 from . channeltest import ChannelTest
+from tests.channel_tests.nlziet_mocks import MOCK_APPCONFIG_RESPONSE, MOCK_EPG_LIVE_RESPONSE
 
 
 class TestNlzietChannel(ChannelTest):
@@ -316,12 +317,11 @@ class TestNlzietChannel(ChannelTest):
     def test_select_profile_if_needed_uses_stored_profile_id(self):
         """Stored profile_id triggers a token exchange without prompting."""
         with patch.object(self.channel, "_Channel__get_stored_profile_id", return_value="stored-id"), \
-             patch.object(self.channel._Channel__handler, "exchange_token",
+             patch.object(self.channel._Channel__handler, "set_profile_claim",
                           return_value=True) as mock_exchange, \
              patch.object(self.channel, "_Channel__set_stored_profile_id") as mock_store:
             self.channel._Channel__select_profile_if_needed()
-        mock_exchange.assert_called_once_with(
-            {"grant_type": "profile", "profile": "stored-id", "scope": "openid api"})
+        mock_exchange.assert_called_once_with("stored-id")
         mock_store.assert_not_called()
 
     def test_select_profile_if_needed_auto_selects_single(self):
@@ -329,13 +329,12 @@ class TestNlzietChannel(ChannelTest):
         profile = {"id": "p1", "displayName": "Oliver"}
         with patch.object(self.channel, "_Channel__get_stored_profile_id", return_value=""), \
              patch.object(self.channel, "_Channel__list_profiles", return_value=[profile]), \
-             patch.object(self.channel._Channel__handler, "exchange_token",
+             patch.object(self.channel._Channel__handler, "set_profile_claim",
                           return_value=True) as mock_exchange, \
              patch.object(self.channel, "_Channel__set_stored_profile_id") as mock_store, \
              patch("resources.lib.xbmcwrapper.XbmcWrapper.show_selection_dialog") as mock_dlg:
             self.channel._Channel__select_profile_if_needed()
-        mock_exchange.assert_called_once_with(
-            {"grant_type": "profile", "profile": "p1", "scope": "openid api"})
+        mock_exchange.assert_called_once_with("p1")
         mock_store.assert_called_once_with("p1")
         mock_dlg.assert_not_called()
 
@@ -346,31 +345,30 @@ class TestNlzietChannel(ChannelTest):
              patch.object(self.channel, "_Channel__list_profiles", return_value=profiles), \
              patch("resources.lib.xbmcwrapper.XbmcWrapper.show_selection_dialog",
                    return_value=1) as mock_dlg, \
-             patch.object(self.channel._Channel__handler, "exchange_token",
+             patch.object(self.channel._Channel__handler, "set_profile_claim",
                           return_value=True) as mock_exchange, \
              patch.object(self.channel, "_Channel__set_stored_profile_id") as mock_store:
             self.channel._Channel__select_profile_if_needed()
         mock_dlg.assert_called_once()
-        mock_exchange.assert_called_once_with(
-            {"grant_type": "profile", "profile": "p2", "scope": "openid api"})
+        mock_exchange.assert_called_once_with("p2")
         mock_store.assert_called_once_with("p2")
 
     def test_select_profile_if_needed_no_profiles_skips_silently(self):
-        """Empty profile list is handled without crash or exchange_token call."""
+        """Empty profile list is handled without crash or set_profile_claim call."""
         with patch.object(self.channel, "_Channel__get_stored_profile_id", return_value=""), \
              patch.object(self.channel, "_Channel__list_profiles", return_value=[]), \
-             patch.object(self.channel._Channel__handler, "exchange_token") as mock_exchange:
+             patch.object(self.channel._Channel__handler, "set_profile_claim") as mock_exchange:
             self.channel._Channel__select_profile_if_needed()
         mock_exchange.assert_not_called()
 
     def test_select_profile_if_needed_cancelled(self):
-        """Cancelling the selection dialog does not call exchange_token."""
+        """Cancelling the selection dialog does not call set_profile_claim."""
         profiles = [{"id": "p1", "displayName": "A"}, {"id": "p2", "displayName": "B"}]
         with patch.object(self.channel, "_Channel__get_stored_profile_id", return_value=""), \
              patch.object(self.channel, "_Channel__list_profiles", return_value=profiles), \
              patch("resources.lib.xbmcwrapper.XbmcWrapper.show_selection_dialog",
                    return_value=-1), \
-             patch.object(self.channel._Channel__handler, "exchange_token") as mock_exchange:
+             patch.object(self.channel._Channel__handler, "set_profile_claim") as mock_exchange:
             self.channel._Channel__select_profile_if_needed()
         mock_exchange.assert_not_called()
 
@@ -488,6 +486,194 @@ class TestNlzietChannel(ChannelTest):
         self.assertEqual(mock_poll.call_count, 2)
         self.assertFalse(result)
 
+    # -- appconfig: mocked equivalent of TestNlzietAppconfigLive -----------
+
+    def test_sync_appconfig_stores_expected_keys(self):
+        """__sync_appconfig() parses and stores a response containing the expected keys."""
+        import chn_nlziet
+
+        stored = {}
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=json.dumps(MOCK_APPCONFIG_RESPONSE)), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.set_setting",
+                   side_effect=lambda k, v, **kw: stored.update({k: v})):
+            self.channel._Channel__sync_appconfig()
+
+        self.assertIn(chn_nlziet.Channel.APPCONFIG_CACHE_KEY, stored)
+        data = json.loads(stored[chn_nlziet.Channel.APPCONFIG_CACHE_KEY])
+        self.assertIn("heartbeatInterval", data)
+
+    # -- process_folder_list: mocked equivalent of TestNlzietChannelLive ---
+
+    def test_process_folder_list_returns_live_channel_items(self):
+        """process_folder_list(None) returns MediaItems for each channel in the API response."""
+        with patch.object(self.channel, "log_on", return_value=True), \
+             patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=json.dumps(MOCK_EPG_LIVE_RESPONSE)), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.set_setting"):
+            items = self.channel.process_folder_list(None)
+
+        self.assertIsNotNone(items)
+        self.assertGreater(len(items), 0)
+        urls = [i.url for i in items]
+        expected_ids = [e["channel"]["content"]["id"] for e in MOCK_EPG_LIVE_RESPONSE["data"]]
+        for channel_id in expected_ids:
+            self.assertTrue(any(f"channel={channel_id}" in u for u in urls),
+                            f"No item URL contains channel={channel_id}")
+
+    # -- Channel metadata (live streaming) ---------------------------------
+
+    def test_mainlist_uri_is_live_endpoint(self):
+        import chn_nlziet
+        self.assertIn(chn_nlziet.Channel.API_V9_EPG_LIVE, self.channel.mainListUri)
+
+    # -- create_live_channel_item ------------------------------------------
+
+    def _live_result_set(self, channel_id="test-ch-1", title="Test Channel",
+                         logo_url="https://example.com/test-ch-1.png",
+                         asset_id="abc", program_title="Current Show",
+                         missing_feature=None):
+        data = {
+            "channel": {
+                "content": {
+                    "id": channel_id,
+                    "title": title,
+                    "logo": {"normalUrl": logo_url}
+                }
+            },
+            "programLocations": [
+                {"content": {"assetId": asset_id, "title": program_title}}
+            ]
+        }
+        if missing_feature is not None:
+            data["channel"]["missingSubscriptionFeature"] = missing_feature
+        return data
+
+    def test_create_live_channel_item_full(self):
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        self.assertTrue(item.isLive)
+        self.assertTrue(item.isDrmProtected)
+        self.assertIn("channel=test-ch-1", item.url)
+        self.assertEqual(item.thumb, "https://example.com/test-ch-1.png")
+        self.assertEqual(item.description, "Current Show")
+        self.assertEqual(item.metaData.get("asset_id"), "abc")
+
+    def test_create_live_channel_item_no_channel(self):
+        """Missing channel dict returns None."""
+        self.assertIsNone(self.channel.create_live_channel_item({}))
+
+    def test_create_live_channel_item_no_id(self):
+        """Channel without id returns None."""
+        result_set = {"channel": {"content": {"title": "No ID"}}}
+        self.assertIsNone(self.channel.create_live_channel_item(result_set))
+
+    def test_create_live_channel_item_paid(self):
+        """Channel with missingSubscriptionFeature is marked paid."""
+        result_set = self._live_result_set(missing_feature="PremiumFeature")
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        self.assertTrue(item.isPaid)
+
+    # -- update_live_item --------------------------------------------------
+
+    def test_update_live_item_success(self):
+        """update_live_item() with a valid handshake response marks item complete."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {
+                "licenseUrl": "https://license.example.com/",
+                "headers": {"Authorization": "Bearer tok"}
+            }
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=handshake_response), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.set_setting"), \
+             patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+             patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+
+    def test_update_live_item_no_channel_id_returns_item(self):
+        """update_live_item() with a URL that has no channel= returns without crash."""
+        from resources.lib.mediaitem import MediaItem
+        item = MediaItem("Test", "https://example.com/no-channel-param")
+        result = self.channel.update_live_item(item)
+        self.assertIsNotNone(result)
+        self.assertFalse(result.complete)
+
+    def test_update_live_item_extra_query_params_do_not_corrupt_channel_id(self):
+        """update_live_item() extracts channel ID correctly even with extra query parameters."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        expected_channel_id = result_set["channel"]["content"]["id"]
+        item.url += "&extra=param"
+
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://lic.example.com/", "headers": {}}
+        })
+        captured_url = []
+
+        def capture_open(url, **kwargs):
+            captured_url.append(url)
+            return handshake_response
+
+        with patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+             patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+
+        self.assertTrue(updated.complete)
+        self.assertTrue(
+            any(f"channel={expected_channel_id}" in u and "extra=param" not in u
+                for u in captured_url),
+            f"Expected clean channel ID in handshake URL, got: {captured_url}")
+
+    def test_update_live_item_invalid_json_returns_item(self):
+        """update_live_item() with a non-JSON handshake response returns without crash."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value="<html>Service Unavailable</html>"):
+            result = self.channel.update_live_item(item)
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result.complete)
+
+    def test_update_live_item_has_no_start_offset(self):
+        """update_live_item() does not add startOffsetInSeconds to the handshake URL."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://lic.example.com/", "headers": {}}
+        })
+        captured_url = []
+
+        def capture_open(url, **kwargs):
+            captured_url.append(url)
+            return handshake_response
+
+        with patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+             patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+
+        self.assertTrue(updated.complete)
+        self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
+
 class TestNlzietAppconfigLive(ChannelTest):
     """Live integration tests for appconfig — requires NLZIET_USERNAME in the environment.
 
@@ -561,3 +747,9 @@ class TestNlzietChannelLive(ChannelTest):
         """Live: a profile is active after login (profile_id is set)."""
         self.assertTrue(self.channel.loggedOn)
         self.assertIsNotNone(self.channel._Channel__handler.profile_id)
+
+    def test_live_channels_returned(self):
+        """Live: process_folder_list(None) returns a non-empty list after login."""
+        items = self.channel.process_folder_list(None)
+        self.assertIsNotNone(items)
+        self.assertGreater(len(items), 0)
