@@ -1373,3 +1373,11 @@ msgstr ""
 msgctxt "#30629"
 msgid "Switch profile"
 msgstr ""
+
+msgctxt "#30630"
+msgid "Restart at programme start"
+msgstr ""
+
+msgctxt "#30631"
+msgid "Live start offset adjustment (seconds, relative to broadcast start)"
+msgstr ""

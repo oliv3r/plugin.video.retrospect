@@ -45,6 +45,16 @@
       "order": 6,
       "value": "label=\"30629\" type=\"action\" action=\"RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=execute&amp;command=switch_profile)\" option=\"close\"",
       "id": "nlziet_switch_profile"
+    },
+    {
+      "order": 7,
+      "value": "label=\"30630\" type=\"bool\" default=\"true\"",
+      "id": "nlziet_restart_padding"
+    },
+    {
+      "order": 8,
+      "value": "label=\"30631\" type=\"slider\" option=\"int\" range=\"-60,10,320\" default=\"0\"",
+      "id": "nlziet_live_start_offset"
     }
   ]
 }

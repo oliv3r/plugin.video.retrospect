@@ -764,7 +764,7 @@ class TestNlzietChannel(ChannelTest):
         self.assertFalse(result.complete)
 
     def test_update_live_item_has_no_start_offset(self):
-        """update_live_item() does not add startOffsetInSeconds to the handshake URL."""
+        """update_live_item() with padding disabled does not add startOffsetInSeconds."""
         result_set = self._live_result_set()
         item = self.channel.create_live_channel_item(result_set)
         handshake_response = json.dumps({
@@ -777,14 +777,122 @@ class TestNlzietChannel(ChannelTest):
             captured_url.append(url)
             return handshake_response
 
+        def no_padding(channel, setting_id, value_for_none=None, store=None):
+            return "false" if setting_id == "nlziet_restart_padding" else "0"
+
         with patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open), \
              patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.get_channel_setting",
+                   side_effect=no_padding), \
              patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
              patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
             updated = self.channel.update_live_item(item)
 
         self.assertTrue(updated.complete)
         self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
+
+    # -- update_live_item: restart padding + live offset ---------------------
+
+    def _channel_setting_side_effect(self, padding_value, slider_value="0"):
+        def _side_effect(channel, setting_id, value_for_none=None, store=None):
+            if setting_id == "nlziet_restart_padding":
+                return padding_value
+            if setting_id == "nlziet_live_start_offset":
+                return slider_value
+            return None
+        return _side_effect
+
+    def _make_live_update_mocks(self, padding_value, slider_value="0",
+                                appconfig_padding=120):
+        """Return (captured_url, context_managers) for update_live_item tests."""
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://lic.example.com/", "headers": {}}
+        })
+        appconfig_json = json.dumps({"liveStreamRestartStartPadding": appconfig_padding})
+        captured_url = []
+
+        def capture_open(url, **kwargs):
+            captured_url.append(url)
+            return handshake_response
+
+        def get_setting_side_effect(setting_id, store=None):
+            if setting_id == "nlziet_appconfig":
+                return appconfig_json
+            return ""
+
+        return captured_url, [
+            patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open),
+            patch("resources.lib.addonsettings.AddonSettings.get_setting",
+                  side_effect=get_setting_side_effect),
+            patch("resources.lib.addonsettings.AddonSettings.get_channel_setting",
+                  side_effect=self._channel_setting_side_effect(padding_value, slider_value)),
+            patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"),
+            patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"),
+        ]
+
+    def test_update_live_item_restart_padding_appends_offset(self):
+        """update_live_item() with padding on uses liveStreamRestartStartPadding as offset."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "0", appconfig_padding=120)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertTrue(any("startOffsetInSeconds=120" in u for u in captured_url))
+
+    def test_update_live_item_positive_slider_adds_to_padding(self):
+        """update_live_item() adds slider value on top of padding offset."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "30", appconfig_padding=120)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertTrue(any("startOffsetInSeconds=150" in u for u in captured_url))
+
+    def test_update_live_item_negative_slider_reduces_offset(self):
+        """update_live_item() subtracts negative slider from padding without going below 0."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "-60", appconfig_padding=120)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertTrue(any("startOffsetInSeconds=60" in u for u in captured_url))
+
+    def test_update_live_item_total_offset_clamped_to_zero(self):
+        """update_live_item() omits startOffsetInSeconds when combined total is negative."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "-120", appconfig_padding=30)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
+
+    def test_update_live_item_padding_off_no_offset(self):
+        """update_live_item() omits startOffsetInSeconds when padding toggle is off."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("false", "0", appconfig_padding=180)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
+
+    def test_update_live_item_offset_sets_manifest_config(self):
+        """update_live_item() sets inputstream.adaptive.manifest_config when offset > 0."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "0", appconfig_padding=90)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        stream_props = dict(updated.streams[-1].Properties)
+        self.assertIn("inputstream.adaptive.manifest_config", stream_props)
+        config = json.loads(stream_props["inputstream.adaptive.manifest_config"])
+        self.assertEqual(config.get("live_offset"), 90)
 
 class TestNlzietAppconfigLive(ChannelTest):
     """Live integration tests for appconfig — requires NLZIET_USERNAME in the environment.

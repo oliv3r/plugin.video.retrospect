@@ -515,13 +515,32 @@ class Channel(chn_class.Channel):
             Logger.error(f"No channel ID in URL for: {item.name}")
             return item
 
+        padding_on = AddonSettings.get_channel_setting(
+            self, "nlziet_restart_padding", "true") == "true"
+        padding = self.__get_live_restart_padding() if padding_on else 0
+
+        try:
+            adjustment = int(float(
+                AddonSettings.get_channel_setting(self, "nlziet_live_start_offset") or 0))
+            adjustment = max(-120, min(120, adjustment))
+        except (ValueError, TypeError):
+            adjustment = 0
+
+        total_offset = max(0, padding + adjustment)
+
         handshake_url = self._prefix_urls(
             "{}?context=Live&channel={}&drmType=Widevine&sourceType=Dash"
             "&playerName=BitmovinWeb&offsetType=Live".format(
                 self.API_V9_LIVE_HANDSHAKE, channel_id)
         )
+        if total_offset:
+            handshake_url += f"&startOffsetInSeconds={total_offset}"
 
         item = self.__handle_stream_handshake(item, handshake_url, manifest_update="full")
+        if total_offset and item.streams:
+            item.streams[-1].add_property(
+                "inputstream.adaptive.manifest_config",
+                json.dumps({"live_offset": total_offset}))
         return item
 
     # -- Stream helpers ----------------------------------------------------
@@ -607,6 +626,14 @@ class Channel(chn_class.Channel):
             XbmcWrapper.show_dialog("NLZIET", msg)
 
     # -- Appconfig cache ---------------------------------------------------
+
+    def __get_live_restart_padding(self) -> int:
+        """Return ``liveStreamRestartStartPadding`` from the cached appconfig (default 180)."""
+        raw = AddonSettings.get_setting(self.APPCONFIG_CACHE_KEY, store=LOCAL) or "{}"
+        try:
+            return int(json.loads(raw).get("liveStreamRestartStartPadding", 180))
+        except (ValueError, TypeError):
+            return 180
 
     def __sync_appconfig(self) -> None:
         """Fetch ``/appconfig`` and store the result in the local settings cache.
