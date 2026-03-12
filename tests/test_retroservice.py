@@ -386,3 +386,109 @@ class TestRetroServiceAbortGuard(_RetroServiceTestBase):
                 svc._tick()
 
         ch.on_service.assert_called_once()
+
+
+class TestRetroServiceIptvConfig(unittest.TestCase):
+    """Tests for _set_xml_setting and _configure_pvr_instance helpers."""
+
+    @staticmethod
+    def _set_xml_setting(*args, **kwargs):
+        import retroservice
+        return retroservice._set_xml_setting(*args, **kwargs)
+
+    @staticmethod
+    def _configure_pvr_instance(*args, **kwargs):
+        import retroservice
+        return retroservice._configure_pvr_instance(*args, **kwargs)
+
+    # --- _set_xml_setting ---
+
+    def test_set_xml_setting_updates_existing(self):
+        content = '<settings version="2">\n    <setting id="foo">old</setting>\n</settings>'
+        result = self._set_xml_setting(content, "foo", "new")
+        self.assertIn('<setting id="foo">new</setting>', result)
+        self.assertNotIn("old", result)
+
+    def test_set_xml_setting_inserts_missing(self):
+        content = '<settings version="2">\n</settings>'
+        result = self._set_xml_setting(content, "bar", "baz")
+        self.assertIn('<setting id="bar">baz</setting>', result)
+        self.assertIn("</settings>", result)
+
+    def test_set_xml_setting_strips_default_attr(self):
+        content = ('<settings version="2">\n'
+                   '    <setting id="foo" default="true">old</setting>\n'
+                   '</settings>')
+        result = self._set_xml_setting(content, "foo", "new")
+        self.assertIn('<setting id="foo">new</setting>', result)
+        self.assertNotIn('default="true"', result)
+
+    # --- _configure_pvr_instance ---
+
+    def test_configure_pvr_instance_missing_dir_is_noop(self):
+        """Missing pvr_data directory → returns without creating any files."""
+        self._configure_pvr_instance("/nonexistent/pvr_data_path_xyz", genres_path=None)
+        # No exception = pass
+
+    def test_configure_pvr_instance_finds_by_name(self):
+        """Phase 1: configures our own file and leaves other files untouched."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as pvr_data:
+            owned = os.path.join(pvr_data, "instance-settings-1.xml")
+            with open(owned, "w") as fh:
+                fh.write('<?xml version="1.0"?>\n<settings version="2">\n'
+                         '    <setting id="kodi_addon_instance_name">Retrospect</setting>\n'
+                         '</settings>\n')
+            other = os.path.join(pvr_data, "instance-settings-2.xml")
+            with open(other, "w") as fh:
+                fh.write('<?xml version="1.0"?>\n<settings version="2">\n</settings>\n')
+
+            self._configure_pvr_instance(pvr_data, genres_path=None)
+
+            with open(owned) as fh:
+                owned_content = fh.read()
+            with open(other) as fh:
+                other_content = fh.read()
+
+        self.assertIn('<setting id="kodi_addon_instance_name">Retrospect</setting>',
+                      owned_content)
+        self.assertIn('<setting id="catchupEnabled">true</setting>', owned_content)
+        self.assertNotIn("catchupEnabled", other_content)
+
+    def test_configure_pvr_instance_claims_iptv_manager_file(self):
+        """Phase 2: claims a file created by service.iptv.manager."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as pvr_data:
+            iptv_file = os.path.join(pvr_data, "instance-settings-1.xml")
+            with open(iptv_file, "w") as fh:
+                fh.write('<?xml version="1.0"?>\n<settings version="2">\n'
+                         '    <setting id="m3uPathType">2</setting>\n'
+                         '    <!-- created by service.iptv.manager -->\n'
+                         '</settings>\n')
+
+            self._configure_pvr_instance(pvr_data, genres_path=None)
+
+            with open(iptv_file) as fh:
+                content = fh.read()
+
+        self.assertIn('<setting id="kodi_addon_instance_name">Retrospect</setting>', content)
+        self.assertIn('<setting id="catchupEnabled">true</setting>', content)
+
+    def test_configure_pvr_instance_creates_fresh_when_none_found(self):
+        """Phase 3: creates instance-settings-N.xml with the next unused N."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as pvr_data:
+            for n in (1, 2):
+                path = os.path.join(pvr_data, "instance-settings-%d.xml" % n)
+                with open(path, "w") as fh:
+                    fh.write('<?xml version="1.0"?>\n<settings version="2">\n</settings>\n')
+
+            self._configure_pvr_instance(pvr_data, genres_path=None)
+
+            created = os.path.join(pvr_data, "instance-settings-3.xml")
+            self.assertTrue(os.path.isfile(created))
+            with open(created) as fh:
+                content = fh.read()
+
+        self.assertIn('<setting id="kodi_addon_instance_name">Retrospect</setting>', content)
+        self.assertIn('<setting id="catchupEnabled">true</setting>', content)
