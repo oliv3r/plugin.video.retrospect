@@ -522,7 +522,7 @@ class Channel(chn_class.Channel):
         try:
             adjustment = int(float(
                 AddonSettings.get_channel_setting(self, "nlziet_live_start_offset") or 0))
-            adjustment = max(-120, min(120, adjustment))
+            adjustment = max(-120, min(320, adjustment))
         except (ValueError, TypeError):
             adjustment = 0
 

@@ -851,6 +851,16 @@ class TestNlzietChannel(ChannelTest):
         self.assertTrue(updated.complete)
         self.assertTrue(any("startOffsetInSeconds=150" in u for u in captured_url))
 
+    def test_update_live_item_honours_max_slider_value(self):
+        """update_live_item() honours the full advertised positive slider range."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "320", appconfig_padding=120)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertTrue(any("startOffsetInSeconds=440" in u for u in captured_url))
+
     def test_update_live_item_negative_slider_reduces_offset(self):
         """update_live_item() subtracts negative slider from padding without going below 0."""
         result_set = self._live_result_set()
