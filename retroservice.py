@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape
 
 import xbmc
 import xbmcaddon
@@ -36,11 +37,13 @@ def _set_xml_setting(content, setting_id, value):
     :return: Updated XML content.
     :rtype: str
     """
+    escaped_setting_id = escape(setting_id, {'"': '&quot;'})
+    escaped_value = escape(value)
     pattern = r'<setting id="%s"[^>]*>[^<]*</setting>' % re.escape(setting_id)
-    replacement = '<setting id="%s">%s</setting>' % (setting_id, value)
+    replacement = '<setting id="%s">%s</setting>' % (escaped_setting_id, escaped_value)
     if re.search(pattern, content):
         return re.sub(pattern, replacement, content)
-    new_line = '    <setting id="%s">%s</setting>\n' % (setting_id, value)
+    new_line = '    <setting id="%s">%s</setting>\n' % (escaped_setting_id, escaped_value)
     return content.replace("</settings>", new_line + "</settings>")
 
 
@@ -91,7 +94,12 @@ def _merge_genre_xmls():
         '',
     ]
     for text, gid in genres.items():
-        lines.append('  <genre genreId="%s">%s</genre>' % (gid, text))
+        lines.append(
+            '  <genre genreId="%s">%s</genre>' % (
+                escape(gid, {'"': '&quot;'}),
+                escape(text)
+            )
+        )
     lines += ['</genres>', '']
     return '\n'.join(lines)
 

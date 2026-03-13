@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import os
+import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("KODI_INTERACTIVE", "0")
@@ -422,6 +424,37 @@ class TestRetroServiceIptvConfig(unittest.TestCase):
         result = self._set_xml_setting(content, "foo", "new")
         self.assertIn('<setting id="foo">new</setting>', result)
         self.assertNotIn('default="true"', result)
+
+    def test_set_xml_setting_escapes_xml_special_chars(self):
+        content = '<settings version="2">\n</settings>'
+        result = self._set_xml_setting(content, "genresPath", "/tmp/Drama & Comedy <test>")
+        root = ET.fromstring(result)
+        self.assertEqual(root.find('./setting[@id="genresPath"]').text, "/tmp/Drama & Comedy <test>")
+
+    def test_merge_genre_xmls_escapes_xml_special_chars(self):
+        import retroservice
+
+        with tempfile.TemporaryDirectory() as tmp:
+            channel_dir = os.path.join(tmp, "channels", "channel.nlziet", "nlziet")
+            os.makedirs(channel_dir)
+            genre_file = os.path.join(channel_dir, "genres.xml")
+            with open(genre_file, "w", encoding="utf-8") as fh:
+                fh.write(
+                    '<?xml version="1.0" encoding="UTF-8"?>\n'
+                    '<genres>\n'
+                    '  <genre genreId="0x10">Drama &amp; Comedy &lt;Live&gt;</genre>\n'
+                    '</genres>\n'
+                )
+
+            with patch("retroservice.Config.rootDir", tmp):
+                merged = retroservice._merge_genre_xmls()
+
+        self.assertIsNotNone(merged)
+        root = ET.fromstring(merged)
+        self.assertEqual(
+            root.find('./genre[@genreId="0x10"]').text,
+            "Drama & Comedy <Live>"
+        )
 
     # --- _configure_pvr_instance ---
 
