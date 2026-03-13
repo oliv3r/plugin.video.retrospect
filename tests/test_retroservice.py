@@ -457,6 +457,19 @@ class TestRetroServiceIptvConfig(unittest.TestCase):
             "Drama & Comedy <Live>"
         )
 
+    def test_nlziet_genre_override_file_contains_expected_mappings(self):
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+        genres_path = os.path.join(repo_root, "channels", "channel.nlziet", "nlziet", "genres.xml")
+
+        self.assertTrue(os.path.isfile(genres_path))
+
+        root = ET.parse(genres_path).getroot()
+        mappings = {elem.text: elem.get("genreId") for elem in root.findall("genre")}
+
+        self.assertEqual(mappings.get("Talkshow"), "0x33")
+        self.assertEqual(mappings.get("Jeugd/Familie"), "0x50")
+        self.assertEqual(mappings.get("Culinair"), "0xA5")
+
     # --- _configure_pvr_instance ---
 
     def test_configure_pvr_instance_missing_dir_is_noop(self):
