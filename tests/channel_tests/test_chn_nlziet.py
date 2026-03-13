@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import json
 import os
+import re
 import sys
 import time
 import unittest
@@ -56,6 +57,32 @@ class TestNlzietChannel(ChannelTest):
 
     def test_requires_logon(self):
         self.assertTrue(self.channel.requiresLogon)
+
+    def test_settings_actions_use_defined_labels(self):
+        from resources.lib.helpers.languagehelper import LanguageHelper
+
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+        settings_path = os.path.join(
+            repo_root, "channels", "channel.nlziet", "nlziet", "chn_nlziet.json"
+        )
+
+        with open(settings_path, encoding="utf-8") as fh:
+            settings = json.load(fh)["settings"]
+
+        settings_by_id = {setting["id"]: setting["value"] for setting in settings}
+
+        def get_label_id(setting_id):
+            match = re.search(r'label="(\d+)"', settings_by_id[setting_id])
+            self.assertIsNotNone(match)
+            return int(match.group(1))
+
+        self.assertEqual(get_label_id("nlziet_device_setup"), LanguageHelper.DeviceSetupTitle)
+        self.assertEqual(get_label_id("nlziet_log_off"), LanguageHelper.LogOut)
+        self.assertEqual(get_label_id("nlziet_switch_profile"), LanguageHelper.SwitchProfile)
+        self.assertEqual(LanguageHelper.get_localized_string(LanguageHelper.LogOut), "Log out")
+        self.assertEqual(
+            LanguageHelper.get_localized_string(LanguageHelper.SwitchProfile), "Switch profile"
+        )
 
     # -- on_service / appconfig cache --------------------------------------
 

@@ -177,6 +177,8 @@ class LanguageHelper(object):
     WelcomeUser = 30625
     UnknownBlockReason = 30626
     UnknownUser = 30627
+    LogOut = 30628
+    SwitchProfile = 30629
 
     Today = 30551
     Yesterday = 30552

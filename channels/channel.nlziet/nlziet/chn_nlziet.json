@@ -18,7 +18,7 @@
   "settings": [
     {
       "order": 1,
-      "value": "label=\"30630\" type=\"action\" action=\"RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=execute&amp;command=setup_device)\" option=\"close\"",
+      "value": "label=\"30618\" type=\"action\" action=\"RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=execute&amp;command=setup_device)\" option=\"close\"",
       "id": "nlziet_device_setup"
     },
     {
@@ -38,12 +38,12 @@
     },
     {
       "order": 5,
-      "value": "label=\"30631\" type=\"action\" action=\"RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=execute&amp;command=log_off)\" option=\"close\"",
+      "value": "label=\"30628\" type=\"action\" action=\"RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=execute&amp;command=log_off)\" option=\"close\"",
       "id": "nlziet_log_off"
     },
     {
       "order": 6,
-      "value": "label=\"30624\" type=\"action\" action=\"RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=execute&amp;command=switch_profile)\" option=\"close\"",
+      "value": "label=\"30629\" type=\"action\" action=\"RunScript(plugin.video.retrospect, 0, ?channel=channel.nlziet.nlziet&amp;action=execute&amp;command=switch_profile)\" option=\"close\"",
       "id": "nlziet_switch_profile"
     }
   ]

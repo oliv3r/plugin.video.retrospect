@@ -1365,3 +1365,11 @@ msgstr ""
 msgctxt "#30627"
 msgid "Unknown User"
 msgstr ""
+
+msgctxt "#30628"
+msgid "Log out"
+msgstr ""
+
+msgctxt "#30629"
+msgid "Switch profile"
+msgstr ""
