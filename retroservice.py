@@ -22,6 +22,7 @@ WARN_SERVICE_INTERVAL = 600   # 10 minutes — slow-interval warning threshold
 TICK_INTERVAL = 5             # seconds between service ticks
 
 _PVR_GENRES_VERSION = 1
+_PVR_INSTANCE_LOCK = threading.Lock()
 
 
 def _set_xml_setting(content, setting_id, value):
@@ -153,77 +154,78 @@ def _configure_pvr_instance(pvr_data, genres_path=None):
     :param str pvr_data: pvr.iptvsimple profile directory.
     :param str|None genres_path: Absolute path to installed genres.xml, or None.
     """
-    if not os.path.isdir(pvr_data):
-        Logger.debug(f"RetroService: pvr_data dir absent ({pvr_data}) — skipping")
-        return
+    with _PVR_INSTANCE_LOCK:
+        if not os.path.isdir(pvr_data):
+            Logger.debug(f"RetroService: pvr_data dir absent ({pvr_data}) — skipping")
+            return
 
-    existing = _glob.glob(os.path.join(pvr_data, "instance-settings-*.xml"))
+        existing = _glob.glob(os.path.join(pvr_data, "instance-settings-*.xml"))
 
-    # Phase 1: find our own file by name
-    target_file = None
-    for path in existing:
-        try:
-            with open(path, encoding="utf-8") as fh:
-                content = fh.read()
-        except OSError:
-            continue
-        if '<setting id="kodi_addon_instance_name">Retrospect</setting>' in content:
-            target_file = path
-            Logger.debug(f"RetroService: found existing Retrospect instance: {path}")
-            break
-
-    # Phase 2: claim a file IPTV Manager created for us
-    if target_file is None:
+        # Phase 1: find our own file by name
+        target_file = None
         for path in existing:
             try:
                 with open(path, encoding="utf-8") as fh:
                     content = fh.read()
             except OSError:
                 continue
-            if "service.iptv.manager" in content:
+            if '<setting id="kodi_addon_instance_name">Retrospect</setting>' in content:
                 target_file = path
-                Logger.info(f"RetroService: claiming IPTV Manager instance: {path}")
+                Logger.debug(f"RetroService: found existing Retrospect instance: {path}")
                 break
 
-    # Phase 3: create fresh instance-settings-N.xml
-    if target_file is None:
-        nums = set()
-        for path in existing:
-            m = re.search(r'instance-settings-(\d+)\.xml$', os.path.basename(path))
-            if m:
-                nums.add(int(m.group(1)))
-        n = 1
-        while n in nums:
-            n += 1
-        target_file = os.path.join(pvr_data, "instance-settings-%d.xml" % n)
-        content = ('<?xml version="1.0" encoding="utf-8"?>\n'
-                   '<settings version="2">\n'
-                   '</settings>\n')
-        Logger.info(f"RetroService: creating new pvr.iptvsimple instance: {target_file}")
-    else:
-        try:
-            with open(target_file, encoding="utf-8") as fh:
-                content = fh.read()
-        except OSError as e:
-            Logger.warning(f"RetroService: failed to read {target_file}: {e}")
-            return
+        # Phase 2: claim a file IPTV Manager created for us
+        if target_file is None:
+            for path in existing:
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        content = fh.read()
+                except OSError:
+                    continue
+                if "service.iptv.manager" in content:
+                    target_file = path
+                    Logger.info(f"RetroService: claiming IPTV Manager instance: {path}")
+                    break
 
-    original = content
-    content = _set_xml_setting(content, "kodi_addon_instance_name", "Retrospect")
-    content = _set_xml_setting(content, "catchupEnabled", "true")
-    content = _set_xml_setting(content, "catchupOnlyOnFinishedProgrammes", "false")
-    if genres_path:
-        content = _set_xml_setting(content, "useEpgGenreText", "true")
-        content = _set_xml_setting(content, "genresPathType", "0")
-        content = _set_xml_setting(content, "genresPath", genres_path)
+        # Phase 3: create fresh instance-settings-N.xml
+        if target_file is None:
+            nums = set()
+            for path in existing:
+                m = re.search(r'instance-settings-(\d+)\.xml$', os.path.basename(path))
+                if m:
+                    nums.add(int(m.group(1)))
+            n = 1
+            while n in nums:
+                n += 1
+            target_file = os.path.join(pvr_data, "instance-settings-%d.xml" % n)
+            content = ('<?xml version="1.0" encoding="utf-8"?>\n'
+                       '<settings version="2">\n'
+                       '</settings>\n')
+            Logger.info(f"RetroService: creating new pvr.iptvsimple instance: {target_file}")
+        else:
+            try:
+                with open(target_file, encoding="utf-8") as fh:
+                    content = fh.read()
+            except OSError as e:
+                Logger.warning(f"RetroService: failed to read {target_file}: {e}")
+                return
 
-    if content != original or not os.path.isfile(target_file):
-        try:
-            with open(target_file, "w", encoding="utf-8") as fh:
-                fh.write(content)
-            Logger.info(f"RetroService: configured pvr.iptvsimple instance {target_file}")
-        except OSError as e:
-            Logger.warning(f"RetroService: failed to write {target_file}: {e}")
+        original = content
+        content = _set_xml_setting(content, "kodi_addon_instance_name", "Retrospect")
+        content = _set_xml_setting(content, "catchupEnabled", "true")
+        content = _set_xml_setting(content, "catchupOnlyOnFinishedProgrammes", "false")
+        if genres_path:
+            content = _set_xml_setting(content, "useEpgGenreText", "true")
+            content = _set_xml_setting(content, "genresPathType", "0")
+            content = _set_xml_setting(content, "genresPath", genres_path)
+
+        if content != original or not os.path.isfile(target_file):
+            try:
+                with open(target_file, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+                Logger.info(f"RetroService: configured pvr.iptvsimple instance {target_file}")
+            except OSError as e:
+                Logger.warning(f"RetroService: failed to write {target_file}: {e}")
 
 
 def _configure_pvr_instance_if_available(genres_path=None):

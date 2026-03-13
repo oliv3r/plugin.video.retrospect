@@ -3,6 +3,7 @@
 
 import os
 import tempfile
+import threading
 import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import Mock, patch
@@ -525,3 +526,68 @@ class TestRetroServiceIptvConfig(unittest.TestCase):
 
         self.assertIn('<setting id="kodi_addon_instance_name">Retrospect</setting>', content)
         self.assertIn('<setting id="catchupEnabled">true</setting>', content)
+
+    def test_configure_pvr_instance_serializes_fresh_create(self):
+        """Concurrent fresh-create calls must not write the same new file in parallel."""
+        import builtins
+
+        real_open = builtins.open
+        active_writers = [0]
+        concurrent_write_detected = []
+        active_lock = threading.Lock()
+
+        class _TrackingFile(object):
+            def __init__(self, fh):
+                self._fh = fh
+
+            def __enter__(self):
+                self._fh.__enter__()
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                try:
+                    return self._fh.__exit__(exc_type, exc_val, exc_tb)
+                finally:
+                    with active_lock:
+                        active_writers[0] -= 1
+
+            def __getattr__(self, item):
+                return getattr(self._fh, item)
+
+        def slow_open(path, mode="r", *args, **kwargs):
+            if "w" in mode and os.path.basename(path).startswith("instance-settings-"):
+                with active_lock:
+                    active_writers[0] += 1
+                    if active_writers[0] > 1:
+                        concurrent_write_detected.append(path)
+                threading.Event().wait(0.1)
+                return _TrackingFile(real_open(path, mode, *args, **kwargs))
+            return real_open(path, mode, *args, **kwargs)
+
+        errors = []
+        start = threading.Barrier(2)
+
+        def worker(pvr_data):
+            try:
+                start.wait()
+                self._configure_pvr_instance(pvr_data, genres_path=None)
+            except BaseException as exc:
+                errors.append(exc)
+
+        with tempfile.TemporaryDirectory() as pvr_data:
+            with patch("builtins.open", side_effect=slow_open):
+                t1 = threading.Thread(target=worker, args=(pvr_data,))
+                t2 = threading.Thread(target=worker, args=(pvr_data,))
+                t1.start()
+                t2.start()
+                t1.join()
+                t2.join()
+
+            created = [
+                os.path.join(pvr_data, name)
+                for name in os.listdir(pvr_data)
+                if name.startswith("instance-settings-") and name.endswith(".xml")
+            ]
+            self.assertEqual(errors, [])
+            self.assertEqual(len(created), 1)
+            self.assertEqual(concurrent_write_detected, [])
