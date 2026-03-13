@@ -428,14 +428,12 @@ class TestNlzietChannel(ChannelTest):
     # -- __select_profile_if_needed ----------------------------------------
 
     def test_select_profile_if_needed_uses_stored_profile_id(self):
-        """Stored profile_id triggers a token exchange without prompting."""
+        """Stored profile_id scopes the token without prompting."""
         with patch.object(self.channel, "_Channel__get_stored_profile_id", return_value="stored-id"), \
-             patch.object(self.channel._Channel__handler, "exchange_token",
-                          return_value=True) as mock_exchange, \
+             patch.object(self.channel._Channel__handler, "set_profile_claim") as mock_set_profile, \
              patch.object(self.channel, "_Channel__set_stored_profile_id") as mock_store:
             self.channel._Channel__select_profile_if_needed()
-        mock_exchange.assert_called_once_with(
-            {"grant_type": "profile", "profile": "stored-id", "scope": "openid api"})
+        mock_set_profile.assert_called_once_with("stored-id")
         mock_store.assert_not_called()
 
     def test_select_profile_if_needed_auto_selects_single(self):
@@ -443,13 +441,12 @@ class TestNlzietChannel(ChannelTest):
         profile = {"id": "p1", "displayName": "Oliver"}
         with patch.object(self.channel, "_Channel__get_stored_profile_id", return_value=""), \
              patch.object(self.channel, "_Channel__list_profiles", return_value=[profile]), \
-             patch.object(self.channel._Channel__handler, "exchange_token",
-                          return_value=True) as mock_exchange, \
+             patch.object(self.channel._Channel__handler, "set_profile_claim",
+                          return_value=True) as mock_set_profile, \
              patch.object(self.channel, "_Channel__set_stored_profile_id") as mock_store, \
              patch("resources.lib.xbmcwrapper.XbmcWrapper.show_selection_dialog") as mock_dlg:
             self.channel._Channel__select_profile_if_needed()
-        mock_exchange.assert_called_once_with(
-            {"grant_type": "profile", "profile": "p1", "scope": "openid api"})
+        mock_set_profile.assert_called_once_with("p1")
         mock_store.assert_called_once_with("p1")
         mock_dlg.assert_not_called()
 
@@ -460,33 +457,32 @@ class TestNlzietChannel(ChannelTest):
              patch.object(self.channel, "_Channel__list_profiles", return_value=profiles), \
              patch("resources.lib.xbmcwrapper.XbmcWrapper.show_selection_dialog",
                    return_value=1) as mock_dlg, \
-             patch.object(self.channel._Channel__handler, "exchange_token",
-                          return_value=True) as mock_exchange, \
+             patch.object(self.channel._Channel__handler, "set_profile_claim",
+                          return_value=True) as mock_set_profile, \
              patch.object(self.channel, "_Channel__set_stored_profile_id") as mock_store:
             self.channel._Channel__select_profile_if_needed()
         mock_dlg.assert_called_once()
-        mock_exchange.assert_called_once_with(
-            {"grant_type": "profile", "profile": "p2", "scope": "openid api"})
+        mock_set_profile.assert_called_once_with("p2")
         mock_store.assert_called_once_with("p2")
 
     def test_select_profile_if_needed_no_profiles_skips_silently(self):
-        """Empty profile list is handled without crash or exchange_token call."""
+        """Empty profile list is handled without crash or profile selection call."""
         with patch.object(self.channel, "_Channel__get_stored_profile_id", return_value=""), \
              patch.object(self.channel, "_Channel__list_profiles", return_value=[]), \
-             patch.object(self.channel._Channel__handler, "exchange_token") as mock_exchange:
+             patch.object(self.channel._Channel__handler, "set_profile_claim") as mock_set_profile:
             self.channel._Channel__select_profile_if_needed()
-        mock_exchange.assert_not_called()
+        mock_set_profile.assert_not_called()
 
     def test_select_profile_if_needed_cancelled(self):
-        """Cancelling the selection dialog does not call exchange_token."""
+        """Cancelling the selection dialog does not call set_profile_claim."""
         profiles = [{"id": "p1", "displayName": "A"}, {"id": "p2", "displayName": "B"}]
         with patch.object(self.channel, "_Channel__get_stored_profile_id", return_value=""), \
              patch.object(self.channel, "_Channel__list_profiles", return_value=profiles), \
              patch("resources.lib.xbmcwrapper.XbmcWrapper.show_selection_dialog",
                    return_value=-1), \
-             patch.object(self.channel._Channel__handler, "exchange_token") as mock_exchange:
+             patch.object(self.channel._Channel__handler, "set_profile_claim") as mock_set_profile:
             self.channel._Channel__select_profile_if_needed()
-        mock_exchange.assert_not_called()
+        mock_set_profile.assert_not_called()
 
     # -- switch_profile action ---------------------------------------------
 
