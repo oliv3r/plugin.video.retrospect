@@ -29,6 +29,9 @@ class Channel(chn_class.Channel):
 
     API_V8_PROFILE = "/v8/profile"
 
+    API_V9_EPG_LIVE = "/v9/epg/programlocations/live"
+    API_V9_LIVE_HANDSHAKE = "/v9/stream/handshake"
+
 
     service_interval = APPCONFIG_HEARTBEAT_DEFAULT
     """Refresh the appconfig every :data:`APPCONFIG_HEARTBEAT_DEFAULT` seconds
@@ -59,13 +62,21 @@ class Channel(chn_class.Channel):
         chn_class.Channel.__init__(self, channel_info)
 
         self.baseUrl = Channel.API_CONTENT_URL
-        self.mainListUri = "#mainlist"
+        self.mainListUri = self._prefix_urls(self.API_V9_EPG_LIVE)
         self.noImage = channel_info.icon
 
         self.requiresLogon = True
 
         self.__handler = NLZIETOAuth2Handler()
         self.__authenticator = Authenticator(self.__handler)
+
+        self._add_data_parser(
+            self._prefix_urls(self.API_V9_EPG_LIVE),
+            name="Live TV channels", json=True,
+            requires_logon=True,
+            parser=["data"],
+            creator=self.create_live_channel_item,
+            updater=self.update_live_item)
 
     # -- Authentication ----------------------------------------------------
 
@@ -436,6 +447,164 @@ class Channel(chn_class.Channel):
         msg = LanguageHelper.get_localized_string(LanguageHelper.LoggedOutSuccessfully)
         XbmcWrapper.show_dialog("NLZIET", msg)
         xbmc.executebuiltin("Container.Refresh()")
+
+    # -- Live channel items ------------------------------------------------
+
+    def create_live_channel_item(self, result_set):
+        """Create a MediaItem for a live TV channel.
+
+        :param dict result_set: A single entry from the ``data`` array of the
+            ``/v9/epg/programlocations/live`` response.
+        :return: A playable MediaItem or None.
+        :rtype: MediaItem|None
+        """
+
+        channel = result_set.get("channel")
+        if not channel:
+            return None
+
+        content = channel.get("content", {})
+        channel_id = content.get("id")
+        title = content.get("title", "")
+        if not channel_id or not title:
+            return None
+
+        url = self._prefix_urls("{}?channel={}".format(self.API_V9_EPG_LIVE, channel_id))
+
+        item = MediaItem(title, url, media_type=mediatype.VIDEO)
+        item.isLive = True
+        item.isGeoLocked = True
+        item.isDrmProtected = True
+        item.complete = False
+
+        logo = content.get("logo", {})
+        logo_url = logo.get("normalUrl")
+        if logo_url:
+            item.thumb = logo_url
+            item.icon = logo_url
+
+        program_locations = result_set.get("programLocations", [])
+        if program_locations:
+            first_program = program_locations[0].get("content", {})
+            asset_id = first_program.get("assetId")
+            if asset_id:
+                item.metaData["asset_id"] = asset_id
+
+            program_title = first_program.get("title", "")
+            if program_title:
+                item.description = program_title
+
+        if channel.get("missingSubscriptionFeature") is not None:
+            item.isPaid = True
+
+        item.HttpHeaders = self.httpHeaders
+        return item
+
+    def update_live_item(self, item):
+        """Fetch the DASH stream URL for a live channel.
+
+        :param MediaItem item: The item to update with stream info.
+        :return: The updated item.
+        :rtype: MediaItem
+        """
+
+        Logger.debug(f"Updating live stream for: {item.name}")
+
+        channel_id = parse_qs(urlparse(item.url).query).get("channel", [""])[0]
+        if not channel_id:
+            Logger.error(f"No channel ID in URL for: {item.name}")
+            return item
+
+        handshake_url = self._prefix_urls(
+            "{}?context=Live&channel={}&drmType=Widevine&sourceType=Dash"
+            "&playerName=BitmovinWeb&offsetType=Live".format(
+                self.API_V9_LIVE_HANDSHAKE, channel_id)
+        )
+
+        item = self.__handle_stream_handshake(item, handshake_url, manifest_update="full")
+        return item
+
+    # -- Stream helpers ----------------------------------------------------
+
+    def __handle_stream_handshake(self, item, handshake_url, manifest_update=None):
+        """Perform a v9 stream handshake and configure the item for playback.
+
+        :param MediaItem item:           The item to update.
+        :param str handshake_url:        The full handshake URL.
+        :param str|None manifest_update: If set, passed as manifest_update_params.
+        :return: The updated item.
+        :rtype: MediaItem
+        """
+
+        data = UriHandler.open(handshake_url, additional_headers=self.httpHeaders,
+                               no_cache=True)
+        if not data:
+            Logger.error(f"Empty handshake response for: {item.name}")
+            return item
+
+        try:
+            json_data = JsonHelper(data)
+        except (json.JSONDecodeError, ValueError) as e:
+            Logger.error(f"NLZIET: Invalid JSON in handshake response for '{item.name}': {e}")
+            return item
+
+        errors = json_data.get_value("errors", fallback=None)
+        if errors:
+            self.__handle_handshake_error(item, errors)
+            return item
+
+        mpd_url = json_data.get_value("manifestUrl", fallback=None)
+        if not mpd_url:
+            Logger.error(f"No stream URI in handshake for: {item.name}")
+            return item
+
+        stream = item.add_stream(mpd_url, 0)
+
+        drm = json_data.get_value("drm", fallback={})
+        license_url = drm.get("licenseUrl") if drm else None
+        if license_url:
+            license_headers = drm.get("headers", {})
+            license_key = Mpd.get_license_key(
+                license_url, key_type="R", key_headers=license_headers)
+            kwargs = {"license_key": license_key}
+            if manifest_update:
+                kwargs["manifest_update_params"] = manifest_update
+            Mpd.set_input_stream_addon_input(stream, **kwargs)
+        else:
+            Mpd.set_input_stream_addon_input(stream)
+
+        item.complete = True
+        return item
+
+    @staticmethod
+    def __handle_handshake_error(item, errors):
+        """Log and handle errors from a stream handshake response.
+
+        :param MediaItem item: The item that failed.
+        :param errors: Error data from the API (list or dict).
+        """
+
+        if isinstance(errors, dict):
+            errors = [e for v in errors.values()
+                      for e in (v if isinstance(v, list) else [v])]
+        if not errors:
+            return
+
+        first = errors[0]
+        if isinstance(first, str):
+            Logger.error(f"Handshake error for {item.name}: {first}")
+            return
+
+        error_type = first.get("type", "")
+        error_msg = first.get("message", "")
+        Logger.error(f"Handshake error for {item.name}: {error_type} - {error_msg}")
+
+        if error_type == "MaximumStreamsReached":
+            error_data = first.get("data", {})
+            max_streams = str(error_data.get("maximumNumberOfStreams", "?"))
+            msg = LanguageHelper.get_localized_string(LanguageHelper.MaxStreamsReached)
+            msg = msg.replace("{0}", max_streams).replace("{1}", max_streams)
+            XbmcWrapper.show_dialog("NLZIET", msg)
 
     # -- Appconfig cache ---------------------------------------------------
 
