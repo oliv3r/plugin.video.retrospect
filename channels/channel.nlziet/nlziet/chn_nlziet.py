@@ -6,17 +6,15 @@ import json
 import threading
 import time
 import xbmc
-from urllib.parse import parse_qs, urlparse, quote
+from urllib.parse import quote
 
-from resources.lib import chn_class, mediatype
+from resources.lib import chn_class
 from resources.lib.addonsettings import AddonSettings, LOCAL
 from resources.lib.authentication.authenticator import Authenticator
 from resources.lib.authentication.nlzietoauth2handler import NLZIETOAuth2Handler
 from resources.lib.helpers.jsonhelper import JsonHelper
 from resources.lib.helpers.languagehelper import LanguageHelper
 from resources.lib.logger import Logger
-from resources.lib.mediaitem import MediaItem
-from resources.lib.streams.mpd import Mpd
 from resources.lib.urihandler import UriHandler
 from resources.lib.xbmcwrapper import XbmcWrapper
 
