@@ -303,8 +303,6 @@ class NLZIETOAuth2Handler(OAuth2Handler):
             AddonSettings.set_setting(f"{self.prefix}access_token", "", store=LOCAL)
             raise
 
-        return True
-
     def set_profile_claim(self, profile_id: str) -> bool:
         """Embed a profile claim into the access token.
 
