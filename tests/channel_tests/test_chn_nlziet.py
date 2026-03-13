@@ -96,6 +96,7 @@ class TestNlzietChannel(ChannelTest):
         """on_service() with a stale/empty cache triggers a fresh network fetch."""
         raw = self._appconfig_raw()
         with patch("resources.lib.urihandler.UriHandler.open", return_value=raw) as mock_open, \
+                patch.object(self.channel._Channel__handler, "refresh_access_token"), \
                 patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
                 patch("resources.lib.addonsettings.AddonSettings.set_setting"):
             self.channel.on_service()
