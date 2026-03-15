@@ -9,6 +9,7 @@ from resources.lib.xbmcwrapper import XbmcWrapper
 from resources.lib.helpers.channelimporter import ChannelIndex
 from resources.lib.helpers.languagehelper import LanguageHelper
 from resources.lib.helpers.sessionhelper import SessionHelper
+from resources.lib.service import RetroService
 from resources.lib.actions.actionparser import ActionParser
 from resources.lib.actions import keyword
 from resources.lib.actions import action
@@ -62,6 +63,9 @@ class Plugin(ActionParser):
 
             # empty picklestore
             self.pickler.purge_store(Config.addonId)
+
+            # start background service
+            RetroService.start()
 
         # create a session
         SessionHelper.create_session(Logger.instance())
