@@ -3,6 +3,8 @@
 import xbmc
 import xbmcaddon
 
+from resources.lib.service import run_service
+
 
 def autorun_retrospect():
     if xbmcaddon.Addon().getSetting("auto_run") == "true":
@@ -11,3 +13,4 @@ def autorun_retrospect():
 
 
 autorun_retrospect()
+run_service()
