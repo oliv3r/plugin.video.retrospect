@@ -569,3 +569,150 @@ class TestIptvSimpleHelperWriters(unittest.TestCase):
             self.assertEqual(root.find('./setting[@id="m3uPath"]').text, expected_m3u)  # type: ignore[union-attr]
             self.assertEqual(root.find('./setting[@id="epgPath"]').text, expected_epg)  # type: ignore[union-attr]
 
+
+    def test_build_pvr_instance_content_leaves_provider_mapping_disabled(self) -> None:
+        """
+        _build_pvr_instance_content leaves provider mapping at template defaults.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_dir = os.path.join(tmp, "profile")
+            channel_dir = os.path.join(tmp, "channels", "channel.nos", "nos2010")
+            os.makedirs(channel_dir)
+            channel = SimpleNamespace(
+                id="channel.nos.nos2010.uzgjson",
+                channelName="NPO Start",
+                path=channel_dir
+            )
+            from resources.lib.helpers.iptvsimplehelper import IptvSimpleHelper
+            with patch("resources.lib.helpers.iptvsimplehelper.Config.profileDir", profile_dir):
+                template = IptvSimpleHelper._get_pvr_instance_template(channel)
+                content = IptvSimpleHelper._build_pvr_instance_content(template, channel, None)
+            root = ET.fromstring(content)
+            self.assertEqual(
+                root.find('./setting[@id="enableProviderMappings"]').text, "false")
+            self.assertEqual(
+                root.find('./setting[@id="providerMappingFile"]').text or "", "")
+
+
+    def test_enable_provider_mapping_sets_flag_and_path(self) -> None:
+        """enable_provider_mapping flips enableProviderMappings and writes the per-channel path."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pvr_data = os.path.join(tmp, "pvr_data")
+            os.makedirs(pvr_data)
+            profile_dir = os.path.join(tmp, "profile")
+            channel_dir = os.path.join(tmp, "channels", "channel.nos", "nos2010")
+            os.makedirs(channel_dir)
+            channel = SimpleNamespace(
+                id="channel.nos.nos2010.uzgjson",
+                channelName="NPO Start",
+                path=channel_dir
+            )
+            from resources.lib.helpers.iptvsimplehelper import IptvSimpleHelper
+            with patch("resources.lib.helpers.iptvsimplehelper.Config.profileDir", profile_dir):
+                template = IptvSimpleHelper._get_pvr_instance_template(channel)
+                instance_content = IptvSimpleHelper._build_pvr_instance_content(
+                    template, channel, None)
+                expected_path = IptvSimpleHelper._get_channel_provider_mapping_path(channel.id)
+
+            instance_path = os.path.join(pvr_data, "instance-settings-1.xml")
+            with open(instance_path, "w", encoding="utf-8") as fh:
+                fh.write(instance_content)
+
+            with patch("resources.lib.helpers.iptvsimplehelper.Config.profileDir", profile_dir):
+                IptvSimpleHelper.enable_provider_mapping(pvr_data, channel.id)
+
+            root = ET.parse(instance_path).getroot()
+            self.assertEqual(
+                root.find('./setting[@id="enableProviderMappings"]').text, "true")
+            self.assertEqual(
+                root.find('./setting[@id="providerMappingFile"]').text, expected_path)
+
+
+    def test_enable_provider_mapping_idempotent(self) -> None:
+        """enable_provider_mapping does not rewrite the file if already enabled."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pvr_data = os.path.join(tmp, "pvr_data")
+            os.makedirs(pvr_data)
+            profile_dir = os.path.join(tmp, "profile")
+            channel_dir = os.path.join(tmp, "channels", "channel.nos", "nos2010")
+            os.makedirs(channel_dir)
+            channel = SimpleNamespace(
+                id="channel.nos.nos2010.uzgjson",
+                channelName="NPO Start",
+                path=channel_dir
+            )
+            from resources.lib.helpers.iptvsimplehelper import IptvSimpleHelper
+            with patch("resources.lib.helpers.iptvsimplehelper.Config.profileDir", profile_dir):
+                template = IptvSimpleHelper._get_pvr_instance_template(channel)
+                instance_content = IptvSimpleHelper._build_pvr_instance_content(
+                    template, channel, None)
+
+            instance_path = os.path.join(pvr_data, "instance-settings-1.xml")
+            with open(instance_path, "w", encoding="utf-8") as fh:
+                fh.write(instance_content)
+
+            with patch("resources.lib.helpers.iptvsimplehelper.Config.profileDir", profile_dir):
+                IptvSimpleHelper.enable_provider_mapping(pvr_data, channel.id)
+
+            mtime_after_first = os.path.getmtime(instance_path)
+
+            with patch("resources.lib.helpers.iptvsimplehelper.Config.profileDir", profile_dir):
+                IptvSimpleHelper.enable_provider_mapping(pvr_data, channel.id)
+
+            self.assertEqual(os.path.getmtime(instance_path), mtime_after_first)
+
+
+    def test_write_provider_mapping_creates_xml(self) -> None:
+        """write_provider_mapping groups channel names by provider."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "providers-test.xml")
+            streams = [
+                {"id": "npo1", "name": "NPO 1", "provider": "NPO",
+                 "logo": "", "group": "NOS", "stream": "url1"},
+                {"id": "npo2", "name": "NPO 2", "provider": "NPO",
+                 "logo": "", "group": "NOS", "stream": "url2"},
+                {"id": "rtl4", "name": "RTL 4", "provider": "RTL",
+                 "logo": "", "group": "NOS", "stream": "url3"},
+            ]
+            from resources.lib.helpers.iptvsimplehelper import IptvSimpleHelper
+            IptvSimpleHelper.write_provider_mapping(streams, output)
+            self.assertTrue(os.path.isfile(output))
+            root = ET.parse(output).getroot()
+            self.assertEqual(root.tag, "providerMappings")
+            providers = {el.get("provider"): [c.text for c in el]
+                         for el in root.findall("providerMapping")}
+            self.assertIn("NPO", providers)
+            self.assertIn("RTL", providers)
+            self.assertCountEqual(providers["NPO"], ["NPO 1", "NPO 2"])
+            self.assertCountEqual(providers["RTL"], ["RTL 4"])
+
+
+    def test_write_provider_mapping_skips_streams_without_provider(self) -> None:
+        """Streams without a 'provider' key are silently ignored."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "providers-test.xml")
+            streams = [
+                {"id": "x", "name": "Some Channel", "logo": "", "group": "G", "stream": "url"},
+            ]
+            from resources.lib.helpers.iptvsimplehelper import IptvSimpleHelper
+            IptvSimpleHelper.write_provider_mapping(streams, output)
+            self.assertFalse(os.path.isfile(output))
+
+
+    def test_write_provider_mapping_skips_empty_provider(self) -> None:
+        """Streams with an empty provider string are ignored."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "providers-test.xml")
+            streams = [
+                {"id": "x", "name": "Ch", "provider": "",
+                 "logo": "", "group": "G", "stream": "url"},
+            ]
+            from resources.lib.helpers.iptvsimplehelper import IptvSimpleHelper
+            IptvSimpleHelper.write_provider_mapping(streams, output)
+            self.assertFalse(os.path.isfile(output))

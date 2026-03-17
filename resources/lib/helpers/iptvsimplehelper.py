@@ -183,6 +183,13 @@ class IptvSimpleHelper(object):
 
 
     @staticmethod
+    def _get_channel_provider_mapping_path(channel_id: str) -> str:
+        """Return the profile-local providerMappings XML path for a channel."""
+
+        return os.path.join(Config.profileDir, "iptv", "providers-{}.xml".format(channel_id))
+
+
+    @staticmethod
     def _next_pvr_instance_path(pvr_data: str, existing_paths: Any) -> str:
         """Return the next unused ``instance-settings-N.xml`` path."""
 
@@ -373,6 +380,59 @@ class IptvSimpleHelper(object):
         cls.configure_pvr_instances(pvr_data, cls._get_iptv_channels())
 
 
+    @classmethod
+    def enable_provider_mapping(cls, pvr_data: str, channel_id: str) -> None:
+        """
+        Enable provider mapping on the pvr.iptvsimple instance for *channel_id*.
+
+        No-op when *pvr_data* does not exist or no matching instance is found.
+        """
+
+        if not os.path.isdir(pvr_data):
+            return
+
+        for path in sorted(_glob.glob(os.path.join(pvr_data, "instance-settings-*.xml"))):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+
+            if cls._get_managed_channel_id(content) != channel_id:
+                continue
+
+            if cls._get_xml_settings(content).get("enableProviderMappings") == "true":
+                return  # already enabled — nothing to do
+
+            provider_path = cls._get_channel_provider_mapping_path(channel_id)
+            content = cls._set_xml_setting(content, "enableProviderMappings", "true")
+            content = cls._set_xml_setting(content, "providerMappingFile", provider_path)
+            try:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+                Logger.info(
+                    "IptvSimpleHelper: enabled provider mappings for %s in %s",
+                    channel_id, path)
+            except OSError as exc:
+                Logger.warning(
+                    "IptvSimpleHelper: failed to enable provider mappings for %s: %s",
+                    channel_id, exc)
+            return
+
+
+    @classmethod
+    def enable_provider_mapping_if_available(cls, channel_id: str) -> None:
+        """Call ``enable_provider_mapping`` if pvr.iptvsimple is installed."""
+
+        try:
+            pvr_addon = xbmcaddon.Addon("pvr.iptvsimple")
+        except RuntimeError:
+            return
+
+        pvr_data = xbmcvfs.translatePath(pvr_addon.getAddonInfo("profile"))
+        cls.enable_provider_mapping(pvr_data, channel_id)
+
+
     @staticmethod
     def write_playlist(streams: list, output_path: str) -> None:
         """Write an M3U8 playlist file for pvr.iptvsimple."""
@@ -462,3 +522,37 @@ class IptvSimpleHelper(object):
             fh.write(content)
         os.replace(tmp_path, output_path)
         Logger.info("IptvSimpleHelper: wrote EPG to %s", output_path)
+
+
+    @staticmethod
+    def write_provider_mapping(streams: list, output_path: str) -> None:
+        """Write a pvr.iptvsimple providerMappings XML file."""
+
+        providers = defaultdict(list)
+        for s in streams:
+            provider = s.get("provider")
+            if provider:
+                providers[provider].append(s["name"])
+
+        if not providers:
+            return
+
+        parent_dir = os.path.dirname(output_path)
+        if not os.path.isdir(parent_dir):
+            os.makedirs(parent_dir)
+
+        lines = ['<?xml version="1.0" encoding="utf-8"?>', "<providerMappings>"]
+        for provider, names in sorted(providers.items()):
+            lines.append('  <providerMapping provider="{}">'.format(escape(provider)))
+            for name in names:
+                lines.append("    <channelName>{}</channelName>".format(escape(name)))
+            lines.append("  </providerMapping>")
+        lines.append("</providerMappings>")
+
+        content = "\n".join(lines) + "\n"
+        tmp_path = output_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.replace(tmp_path, output_path)
+        Logger.info("IptvSimpleHelper: wrote provider mapping to %s (%d providers)",
+                    output_path, len(providers))

@@ -191,16 +191,20 @@ class Channel(chn_class.Channel):
             channel_id = channel_content.get("id", "")
             title = channel_content.get("title", "")
             logo = channel_content.get("logo", {}).get("normalUrl", "")
+            content_provider = channel_content.get("contentProvider", "")
 
             stream_url = parameter_parser.create_action_url(
                 self, action=action.PLAY_VIDEO, item=item, store_id=parent.guid)
-            streams.append({
+            stream_dict = {
                 "id": channel_id,
                 "name": title,
                 "logo": logo,
                 "group": self.channelName,
                 "stream": stream_url,
-            })
+            }
+            if content_provider:
+                stream_dict["provider"] = content_provider
+            streams.append(stream_dict)
             items.append(item)
 
         if items:

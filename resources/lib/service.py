@@ -80,6 +80,11 @@ class RetroService(xbmc.Monitor):
             playlist_path = IptvSimpleHelper._get_channel_playlist_path(channel_entry.id)
             IptvSimpleHelper.write_playlist(streams, playlist_path)
 
+            if any(s.get("provider") for s in streams):
+                provider_path = IptvSimpleHelper._get_channel_provider_mapping_path(channel_info.id)
+                IptvSimpleHelper.write_provider_mapping(streams, provider_path)
+                IptvSimpleHelper.enable_provider_mapping_if_available(channel_info.id)
+
         epg = channel.create_iptv_epg(parser)
         if epg:
             epg_path = IptvSimpleHelper._get_channel_epg_path(channel_entry.id)
