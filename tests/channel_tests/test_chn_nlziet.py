@@ -2889,11 +2889,13 @@ class TestNlzietIptv(ChannelTest):
         _LIVE_FIXTURE = json.dumps({"data": [
             {
                 "channel": {"content": {"id": "npo1", "title": "NPO 1",
+                                        "contentProvider": "NPO",
                                         "logo": {"normalUrl": "https://example.com/npo1.png"}}},
                 "programLocations": [{"content": {"assetId": "asset-1", "title": "News"}}]
             },
             {
                 "channel": {"content": {"id": "rtl4", "title": "RTL 4",
+                                        "contentProvider": "RTL",
                                         "logo": {"normalUrl": "https://example.com/rtl4.png"}}},
                 "programLocations": []
             },
@@ -2907,8 +2909,28 @@ class TestNlzietIptv(ChannelTest):
         self.assertEqual(s["id"], "npo1")
         self.assertEqual(s["name"], "NPO 1")
         self.assertEqual(s["logo"], "https://example.com/npo1.png")
+        self.assertEqual(s["provider"], "NPO")
         self.assertIn("stream", s)
+        self.assertEqual(streams[1]["provider"], "RTL")
         parser.pickler.store_media_items.assert_called_once()
+
+    def test_iptv_streams_provider_omitted_when_absent(self) -> None:
+        """Streams without contentProvider do not get a 'provider' key."""
+
+        _LIVE_FIXTURE = json.dumps({"data": [
+            {
+                "channel": {"content": {"id": "npo1", "title": "NPO 1",
+                                        "logo": {"normalUrl": ""}}},
+                "programLocations": []
+            },
+        ]})
+        self.channel.loggedOn = True
+        parser = self._make_mock_parser()
+        parser.pickler = MagicMock()
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=_LIVE_FIXTURE):
+            streams = self.channel.create_iptv_streams(parser)
+        self.assertEqual(len(streams), 1)
+        self.assertNotIn("provider", streams[0])
 
     def test_iptv_streams_empty_response(self) -> None:
         """SUCCESS → returns empty list when API response body is empty."""

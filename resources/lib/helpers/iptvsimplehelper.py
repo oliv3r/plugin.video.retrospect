@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 import xml.etree.ElementTree as ET
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Dict, Optional
 from xml.sax.saxutils import escape
@@ -475,6 +476,89 @@ class IptvSimpleHelper(object):
             else:
                 new_xml = self._set_xml_setting(new_xml, "kodi_addon_instance_enabled", "true")
                 self._create_instance_settings(iptvsimple_profile_dir, new_xml)
+
+
+    def write_provider_mapping(self, streams: list, channel_id: str) -> None:
+        """
+        Write a pvr.iptvsimple providerMappings XML file.
+
+        :param streams:     Stream dicts with optional ``provider`` and
+                            ``name`` keys.
+        :param channel_id:  Channel identifier used to derive the output path.
+        """
+
+        providers = defaultdict(list)
+        for s in streams:
+            provider = s.get("provider")
+            if provider:
+                providers[provider].append(s["name"])
+        if not providers:
+            return
+
+        output_path = os.path.join(Config.profileDir, "iptv", f"providers-{channel_id}.xml")
+        parent_dir = os.path.dirname(output_path)
+        if not os.path.isdir(parent_dir):
+            os.makedirs(parent_dir)
+
+        lines = ['<?xml version="1.0" encoding="utf-8"?>', "<providerMappings>"]
+        for provider, names in sorted(providers.items()):
+            lines.append(f'  <providerMapping provider="{escape(provider)}">')
+            for name in names:
+                lines.append(f"    <channelName>{escape(name)}</channelName>")
+            lines.append("  </providerMapping>")
+        lines.append("</providerMappings>")
+
+        content = "\n".join(lines) + "\n"
+        tmp_path = output_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.replace(tmp_path, output_path)
+        Logger.info(
+            f"IptvSimpleHelper: wrote provider mapping to {output_path} ({len(providers)} providers)")
+
+
+    def enable_provider_mapping(self, channel_id: str) -> None:
+        """
+        Enable provider mapping on the pvr.iptvsimple instance for *channel_id*.
+
+        No-op when pvr.iptvsimple is not installed, its profile directory does
+        not exist, or no matching instance is found.
+
+        :param channel_id:  Channel identifier to match.
+        """
+
+        try:
+            pvr_addon = xbmcaddon.Addon("pvr.iptvsimple")
+        except RuntimeError:
+            return
+
+        iptvsimple_profile_dir = xbmcvfs.translatePath(pvr_addon.getAddonInfo("profile"))
+        if not os.path.isdir(iptvsimple_profile_dir):
+            return
+
+        for instance_settings_path in _glob.glob(os.path.join(iptvsimple_profile_dir, "instance-settings-*.xml")):
+            if self._get_xml_setting(instance_settings_path, _PVR_MANAGED_CHANNEL_SETTING) != channel_id:
+                continue
+
+            if self._get_xml_setting(instance_settings_path, "enableProviderMappings") == "true":
+                return  # already enabled — nothing to do
+
+            try:
+                with open(instance_settings_path, encoding="utf-8") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+
+            provider_path = os.path.join(Config.profileDir, "iptv", f"providers-{channel_id}.xml")
+            content = self._set_xml_setting(content, "providerMappingFile", provider_path)
+            content = self._set_xml_setting(content, "enableProviderMappings", "true")
+            try:
+                with open(instance_settings_path, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+                Logger.info(f"IptvSimpleHelper: enabled provider mappings for {channel_id} in {instance_settings_path}")
+            except OSError:
+                Logger.error(f"IptvSimpleHelper: failed to enable provider mappings for {channel_id}", exc_info=True)
+            return
 
 
     def write_playlist(self, streams: list, channel_id: str) -> None:

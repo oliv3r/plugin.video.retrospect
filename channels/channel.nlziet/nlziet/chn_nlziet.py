@@ -468,6 +468,9 @@ class Channel(chn_class.Channel):
                 "name": item.name,
                 "stream": stream_url,
             }
+            content_provider = item.metaData.get("content_provider", "")
+            if content_provider:
+                stream_dict["provider"] = content_provider
             streams.append(stream_dict)
             items.append(item)
 
