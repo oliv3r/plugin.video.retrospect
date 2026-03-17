@@ -94,6 +94,10 @@ class RetroService(xbmc.Monitor):
         if streams:
             helper.write_playlist(streams, channel_entry.id)
 
+            if any(s.get("provider") for s in streams):
+                helper.write_provider_mapping(streams, channel_entry.id)
+                helper.enable_provider_mapping(channel_entry.id)
+
         epg = channel.create_iptv_epg(parser)
         if epg:
             helper.write_epg(epg, channel_entry.id, streams=streams)
