@@ -185,6 +185,11 @@ class LanguageHelper(object):
     LogIn = 30632
     LogOut = 30633
     SwitchProfile = 30634
+    MaxStreamsReached = 30635
+    MissingSubscription = 30636
+    UnauthorizedStream = 30637
+    ChannelUnavailable = 30638
+    ContentNotPlayable = 30639
 
     Today = 30551
     Yesterday = 30552

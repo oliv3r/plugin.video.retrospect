@@ -19,8 +19,8 @@ if not hasattr(_xbmcgui, "WindowXMLDialog"):
 from resources.lib.authentication.nlziethandler import DEVICE_FLOW_USER_AGENT
 from resources.lib.logger import Logger
 from resources.lib.urihandler import UriHandler, UriStatus
-from . channeltest import ChannelTest
-from tests.channel_tests.nlziet_mocks import MOCK_APPCONFIG_RESPONSE
+from .channeltest import ChannelTest
+from tests.channel_tests.nlziet_mocks import MOCK_APPCONFIG_RESPONSE, MOCK_EPG_LIVE_RESPONSE
 
 
 class TestNlzietChannel(ChannelTest):
@@ -53,27 +53,28 @@ class TestNlzietChannel(ChannelTest):
 
     # -- Channel metadata --------------------------------------------------
 
-
     def test_channel_exists(self) -> None:
         self.assertIsNotNone(self.channel)
 
 
-    def test_initial_folder_items_returns_empty_when_not_logged_on(self) -> None:
-        """get_initial_folder_items() returns no items when the user is not logged in."""
+    def test_initial_folder_items_returns_live_tv_folder_when_not_logged_on(self) -> None:
+        """SUCCESS → returns Live TV folder even when the user is not logged in."""
 
         with patch.object(type(self.channel), "loggedOn",
                           new_callable=PropertyMock, return_value=False):
             _, items = self.channel.get_initial_folder_items("")
-        self.assertEqual(items, [])
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0].isLive)
 
 
-    def test_initial_folder_items_returns_empty_when_logged_on(self) -> None:
-        """get_initial_folder_items() returns no items even when logged in (skeleton stub)."""
+    def test_initial_folder_items_returns_live_tv_folder_when_logged_on(self) -> None:
+        """SUCCESS → returns one isLive FolderItem for Live TV."""
 
         with patch.object(type(self.channel), "loggedOn",
                           new_callable=PropertyMock, return_value=True):
             _, items = self.channel.get_initial_folder_items("")
-        self.assertEqual(items, [])
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0].isLive)
 
 
     def test_service_interval_default(self) -> None:
@@ -107,7 +108,6 @@ class TestNlzietChannel(ChannelTest):
         self.assertEqual(self.channel._nlziet_headers["Nlziet-AppVersion"], expected_version)
 
     # -- service_update / appconfig cache ----------------------------------
-
 
     def _appconfig_raw(self, extra: Optional[Dict[str, Any]] = None) -> str:
         payload = {"epgCacheTime": 300, "isAppBlocked": False}
@@ -247,27 +247,15 @@ class TestNlzietChannel(ChannelTest):
         self.assertTrue(chn_nlziet.Channel.is_update_required)
 
 
-class TestNlzietAppconfigLive(ChannelTest):
-    """
-    Live integration tests for appconfig — requires NLZIET_USERNAME in the environment.
+class TestNlzietChannelUnit(ChannelTest):
+    """Unit tests for the NLZIET channel — always run, no credentials required.
 
-    Calls the real endpoint without authentication (the endpoint is public).
-    Guards on NLZIET_USERNAME presence as the 'run live tests' signal so
-    these only execute in environments that have network access and credentials
-    configured.
+    All HTTP calls and settings I/O are patched.
     """
 
 
     def __init__(self, methodName: str) -> None:
         super().__init__(methodName, "channel.nlziet.nlziet", None)
-
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        if (not os.getenv("NLZIET_USERNAME") or
-                not os.getenv("NLZIET_PASSWORD")):
-            raise unittest.SkipTest("NLZIET credentials not in environment.")
-        super().setUpClass()
 
 
     def setUp(self) -> None:
@@ -278,7 +266,6 @@ class TestNlzietAppconfigLive(ChannelTest):
         self._orig_blocked_reason = chn_nlziet.Channel.blocked_reason
         self._orig_is_update_required = chn_nlziet.Channel.is_update_required
         self._orig_update_reason = chn_nlziet.Channel.update_reason
-        # Channel init makes real HTTP calls without credentials; clear stale status.
         UriHandler.instance().status = UriStatus(code=0, url=None, error=False, reason=None)
 
 
@@ -289,40 +276,8 @@ class TestNlzietAppconfigLive(ChannelTest):
         chn_nlziet.Channel.blocked_reason = self._orig_blocked_reason
         chn_nlziet.Channel.is_update_required = self._orig_is_update_required
         chn_nlziet.Channel.update_reason = self._orig_update_reason
+        chn_nlziet.Channel._item_detail_cache = {}
         super().tearDown()
-
-
-    def test_appconfig_unauthenticated(self) -> None:
-        """Real appconfig fetch (no auth) returns parseable JSON with expected keys.
-
-        Acts as a CI canary: fails hard if isAppBlocked, emits DeprecationWarning
-        if isUpdateRequired so the pipeline surfaces it without breaking the build.
-        """
-
-        import chn_nlziet
-        from resources.lib.addonsettings import AddonSettings, LOCAL
-        import warnings
-
-        self.channel._sync_appconfig()
-
-        raw = AddonSettings.get_setting(chn_nlziet.APPCONFIG_CACHE_KEY, store=LOCAL)
-        self.assertIsNotNone(raw, "appconfig was not cached — fetch may have failed")
-        data = json.loads(raw)
-        self.assertIn("heartbeatInterval", data)
-
-        if data.get("isAppBlocked"):
-            reason = data.get("appBlockedReason") or "no reason provided"
-            self.fail(f"NLZIET app is blocked — {reason}")
-
-        if data.get("isUpdateRequired"):
-            Logger.warning(
-                "*** NLZIET API DEPRECATION: isUpdateRequired=True — "
-                "the API client needs updating! updateText: %s",
-                data.get("updateText", ""))
-            warnings.warn(
-                "NLZIET API deprecation: isUpdateRequired=True. "
-                "Update the API client.",
-                DeprecationWarning, stacklevel=2)
 
 
     def test_sync_appconfig_stores_expected_keys(self) -> None:
@@ -489,7 +444,6 @@ class TestNlzietAppconfigLive(ChannelTest):
 
     # -- __list_profiles ---------------------------------------------------
 
-
     def test_list_profiles_returns_profiles(self) -> None:
         """__list_profiles() returns profile list from API response."""
 
@@ -538,7 +492,6 @@ class TestNlzietAppconfigLive(ChannelTest):
         self.assertEqual(result, [])
 
     # -- __select_profile_if_needed ----------------------------------------
-
 
     def test_select_profile_if_needed_uses_stored_profile_id(self) -> None:
         """Stored profile_id calls set_profile_claim when the current token lacks the profile claim."""
@@ -622,7 +575,6 @@ class TestNlzietAppconfigLive(ChannelTest):
 
     # -- switch_profile action ---------------------------------------------
 
-
     def test_switch_profile_action_requires_login(self) -> None:
         """switch_profile() shows LoginFirst and does nothing when not logged in."""
 
@@ -660,7 +612,6 @@ class TestNlzietAppconfigLive(ChannelTest):
 
     # -- __profile_type ----------------------------------------------------
 
-
     def test_profile_type_returns_jwt_claim(self) -> None:
         """__profile_type() returns profileType from the handler's token property."""
 
@@ -686,6 +637,1665 @@ class TestNlzietAppconfigLive(ChannelTest):
                           new_callable=PropertyMock, return_value=""):
             result = self.channel._profile_type()
         self.assertEqual(result, "")
+
+
+    # -- process_folder_list: mocked equivalent of TestNlzietChannelLive ---
+
+    def test_process_folder_list_returns_live_channel_items(self) -> None:
+        """SUCCESS → navigating into the Live TV folder yields one item per EPG channel."""
+
+        with patch.object(self.channel, "log_on", return_value=True), \
+             patch.object(self.channel._handler, "get_authentication_token", return_value="tok"), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.set_setting"):
+            top_level = self.channel.process_folder_list(None)
+
+        self.assertIsNotNone(top_level)
+        live_tv_item = next(i for i in top_level if i.isLive)
+
+        with patch.object(self.channel, "log_on", return_value=True), \
+             patch.object(self.channel._handler, "get_authentication_token", return_value="tok"), \
+             patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=json.dumps(MOCK_EPG_LIVE_RESPONSE)), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.set_setting"):
+            items = self.channel.process_folder_list(live_tv_item)
+
+        self.assertIsNotNone(items)
+        self.assertGreater(len(items), 0)
+        urls = [i.url for i in items]
+        expected_ids = [e["channel"]["content"]["id"] for e in MOCK_EPG_LIVE_RESPONSE["data"]]
+        for channel_id in expected_ids:
+            self.assertTrue(any(f"channel={channel_id}" in u for u in urls),
+                            f"No item URL contains channel={channel_id}")
+
+    # -- create_live_channel_item ------------------------------------------
+
+    def _live_result_set(self, channel_id: str = "test-ch-1", title: str = "Test Channel",
+                         logo_url: str = "https://example.com/test-ch-1.png",
+                         asset_id: str = "abc", program_title: str = "Current Show",
+                         missing_feature: Optional[str] = None,
+                         landscape_url: str = "",
+                         portrait_url: str = "",
+                         content_item_id: str = "",
+                         content_provider: str = "") -> Dict[str, Any]:
+        program_content: Dict[str, Any] = {"assetId": asset_id, "title": program_title}
+        if landscape_url or portrait_url:
+            program_content["image"] = {
+                "landscapeUrl": landscape_url or None,
+                "portraitUrl": portrait_url or None,
+            }
+        if content_item_id:
+            program_content["contentItemId"] = content_item_id
+        data: Dict[str, Any] = {
+            "channel": {
+                "content": {
+                    "id": channel_id,
+                    "title": title,
+                    "logo": {"normalUrl": logo_url}
+                }
+            },
+            "programLocations": [{"content": program_content}]
+        }
+        if content_provider:
+            data["channel"]["content"]["contentProvider"] = content_provider
+        if missing_feature is not None:
+            data["channel"]["missingSubscriptionFeature"] = missing_feature
+        return data
+
+
+    def test_create_live_channel_item_full(self) -> None:
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        self.assertTrue(item.isLive)
+        self.assertTrue(item.isDrmProtected)
+        self.assertIn("channel=test-ch-1", item.url)
+        self.assertEqual(item.icon, self.channel.icon)
+        self.assertEqual(item.poster, "https://example.com/test-ch-1.png")
+        self.assertEqual(item.name, "Test Channel")
+        self.assertEqual(item.tv_show_title, "Current Show")
+        self.assertIsNone(item.subtitle)
+        self.assertEqual(item.description, "")
+        self.assertEqual(item.metaData["asset_id"], "abc")
+
+
+    def test_create_live_channel_item_stores_channel_id_in_metadata(self) -> None:
+        """SUCCESS → channel_id stored in metaData."""
+
+        result_set = self._live_result_set(channel_id="sbs6")
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertEqual(item.metaData["channel_id"], "sbs6")
+
+
+    def test_create_live_channel_item_stores_logo_url_in_metadata(self) -> None:
+        """SUCCESS → logo HTTP URL stored in metaData."""
+
+        result_set = self._live_result_set(logo_url="https://example.com/sbs6.png")
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertEqual(item.metaData["logo_url"], "https://example.com/sbs6.png")
+
+
+    def test_create_live_channel_item_no_logo_url_omits_metadata_key(self) -> None:
+        """SUCCESS → missing logo URL leaves logo_url absent from metaData."""
+
+        result_set = self._live_result_set(logo_url="")
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertNotIn("logo_url", item.metaData)
+
+
+    def test_create_live_channel_item_clearlogo_uses_flat_url(self) -> None:
+        """SUCCESS → flatUrl present → clearlogo is set to flatUrl."""
+
+        result_set = {
+            "channel": {"content": {
+                "id": "rtl4",
+                "title": "RTL 4",
+                "logo": {
+                    "normalUrl": "https://example.com/rtl4-normal.png",
+                    "flatUrl": "https://example.com/rtl4-flat.png",
+                },
+            }},
+            "programLocations": [],
+        }
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertEqual(item.clearlogo, "https://example.com/rtl4-flat.png")
+
+
+    def test_create_live_channel_item_clearlogo_falls_back_to_normal_url(self) -> None:
+        """flatUrl absent, normalUrl present → clearlogo falls back to normalUrl."""
+
+        result_set = {
+            "channel": {"content": {
+                "id": "rtl4",
+                "title": "RTL 4",
+                "logo": {"normalUrl": "https://example.com/rtl4-normal.png"},
+            }},
+            "programLocations": [],
+        }
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertEqual(item.clearlogo, "https://example.com/rtl4-normal.png")
+
+
+    def test_create_live_channel_item_clearlogo_empty_when_no_logo(self) -> None:
+        """logo key absent → clearlogo is empty."""
+
+        result_set = {
+            "channel": {"content": {"id": "rtl4", "title": "RTL 4"}},
+            "programLocations": [],
+        }
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertFalse(item.clearlogo)
+
+
+    def test_create_live_channel_item_stores_content_provider_in_metadata(self) -> None:
+        """SUCCESS → contentProvider stored in metaData when present."""
+
+        result_set = self._live_result_set(content_provider="RTL")
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertEqual(item.metaData["content_provider"], "RTL")
+
+
+    def test_create_live_channel_item_no_content_provider_omits_metadata_key(self) -> None:
+        """SUCCESS → absent contentProvider leaves content_provider out of metaData."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertNotIn("content_provider", item.metaData)
+
+
+    def test_create_live_channel_item_no_channel(self) -> None:
+        """Missing channel dict returns None."""
+
+        self.assertIsNone(self.channel.create_live_channel_item({}))
+
+
+    def test_create_live_channel_item_no_id(self) -> None:
+        """Channel without id returns None."""
+
+        result_set = {"channel": {"content": {"title": "No ID"}}}
+        self.assertIsNone(self.channel.create_live_channel_item(result_set))
+
+
+    def test_create_live_channel_item_paid(self) -> None:
+        """Channel with missingSubscriptionFeature is marked paid."""
+
+        result_set = self._live_result_set(missing_feature="ExtraChannelPackage1")
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        self.assertTrue(item.isPaid)
+
+
+    @staticmethod
+    def _detail_response(description: str = "A great show", duration: int = 3600,
+                         genres: Optional[list] = None, nicam_age: str = "12",
+                         portrait_url: Optional[str] = "https://example.com/portrait.jpg",
+                         landscape_url: str = "https://example.com/landscape-detail.jpg",
+                         series_title: str = "The Series",
+                         series_landscape_url: Optional[str] = None,
+                         series_portrait_url: Optional[str] = None,
+                         broadcaster_logo_url: Optional[str] = None) -> str:
+        series: Dict[str, Any] = {"title": series_title}
+        series_image: Dict[str, Any] = {}
+        if series_landscape_url:
+            series_image["landscapeUrl"] = series_landscape_url
+        if series_portrait_url:
+            series_image["portraitUrl"] = series_portrait_url
+        if series_image:
+            series["image"] = series_image
+        content: Dict[str, Any] = {
+            "description": description,
+            "durationInSeconds": duration,
+            "genres": genres if genres is not None else [{"name": "Drama"}],
+            "nicam": {"age": nicam_age},
+            "image": {"portraitUrl": portrait_url, "landscapeUrl": landscape_url},
+            "series": series,
+        }
+        if broadcaster_logo_url:
+            content["broadcasters"] = [{"name": "TestBroadcaster", "logoUrl": broadcaster_logo_url}]
+        return json.dumps({"content": content})
+
+
+    def test_create_live_channel_item_sets_fanart_from_landscape_url(self) -> None:
+        """Landscape URL from the programme is set as fanart on the item."""
+
+        result_set = self._live_result_set(
+            landscape_url="https://example.com/landscape.jpg")
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.fanart, "https://example.com/landscape.jpg")
+
+
+    def test_create_live_channel_item_landscape_sets_fanart_not_thumb(self) -> None:
+        """SUCCESS → landscape sets fanart; thumb stays as logo; poster is not set."""
+
+        result_set = self._live_result_set(
+            logo_url="https://example.com/logo.png",
+            landscape_url="https://example.com/landscape.jpg")
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.icon, self.channel.icon)
+        self.assertEqual(item.thumb, "https://example.com/logo.png")
+        self.assertEqual(item.fanart, "https://example.com/landscape.jpg")
+        self.assertEqual(item.poster, "https://example.com/logo.png")
+
+
+    def test_create_live_channel_item_programme_portrait_sets_poster(self) -> None:
+        """SUCCESS → programme portrait from EPG is set as initial poster."""
+
+        result_set = self._live_result_set(
+            portrait_url="https://example.com/prog-portrait.jpg")
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        self.assertEqual(item.poster, "https://example.com/prog-portrait.jpg")
+
+
+    def test_create_live_channel_item_no_content_item_id_skips_detail_call(self) -> None:
+        """No contentItemId means no detail HTTP call is made."""
+
+        result_set = self._live_result_set()
+        with patch("resources.lib.urihandler.UriHandler.open") as mock_open:
+            self.channel.create_live_channel_item(result_set)
+        mock_open.assert_not_called()
+
+
+    def test_create_live_channel_item_sets_description_duration_genre_mpaa(self) -> None:
+        """SUCCESS → description, duration, genre, Mpaa and tv_show_title are all set."""
+
+        result_set = self._live_result_set(content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response()):
+            item = self.channel.create_live_channel_item(result_set)
+
+        from resources.lib.mediaitem import MediaItem as MI
+        self.assertEqual(item.description, "[B]The Series[/B]\n\nA great show")
+        self.assertEqual(item.get_info_label(MI.LabelDuration), 3600)
+        self.assertEqual(item.get_info_label("Genre"), "Drama")
+        self.assertEqual(item.get_info_label("Mpaa"), "NICAM 12+")
+        self.assertEqual(item.poster, "https://example.com/portrait.jpg")
+        self.assertEqual(item.tv_show_title, "The Series")
+
+
+    def test_create_live_channel_item_allages_does_not_set_mpaa(self) -> None:
+        """NICAM age 'AllAges' must not produce an Mpaa label."""
+
+        result_set = self._live_result_set(content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response(nicam_age="AllAges")):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertFalse(item.has_info_label("Mpaa"))
+
+
+    def test_create_live_channel_item_detail_http_error_leaves_description_empty(self) -> None:
+        """HTTP error from detail API leaves description unset."""
+
+        def _error(url: str, **kwargs: Any) -> str:
+            UriHandler.instance().status = UriStatus(
+                code=503, url=url, error=True, reason="Service Unavailable")
+            return ""
+
+        result_set = self._live_result_set(content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open", side_effect=_error):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.description, "")
+
+
+    def test_create_live_channel_item_series_landscape_overrides_episode_landscape(self) -> None:
+        """SUCCESS → series landscape replaces episode landscape as fanart."""
+
+        result_set = self._live_result_set(
+            landscape_url="https://example.com/episode-landscape.jpg",
+            content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response(
+                       series_landscape_url="https://example.com/series-landscape.jpg")):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.fanart, "https://example.com/series-landscape.jpg")
+
+
+    def test_create_live_channel_item_no_series_landscape_keeps_episode_fanart(self) -> None:
+        """SUCCESS → fanart stays as episode landscape when series has no image."""
+
+        result_set = self._live_result_set(
+            landscape_url="https://example.com/episode-landscape.jpg",
+            content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response(series_landscape_url=None)):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.fanart, "https://example.com/episode-landscape.jpg")
+
+
+    def test_create_live_channel_item_detail_bad_json_leaves_description_empty(self) -> None:
+        """Non-JSON response from detail API leaves description unset."""
+
+        result_set = self._live_result_set(content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open", return_value="not json"):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.description, "")
+
+
+    def test_create_live_channel_item_series_portrait_sets_poster(self) -> None:
+        """SUCCESS → series portrait from detail API is set as poster."""
+
+        result_set = self._live_result_set(content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response(
+                       series_portrait_url="https://example.com/series-portrait.jpg")):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.poster, "https://example.com/series-portrait.jpg")
+
+
+    def test_create_live_channel_item_series_portrait_overrides_programme_portrait(self) -> None:
+        """SUCCESS → series portrait overrides programme portrait."""
+
+        result_set = self._live_result_set(
+            portrait_url="https://example.com/prog-portrait.jpg",
+            content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response(
+                       series_portrait_url="https://example.com/series-portrait.jpg")):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.poster, "https://example.com/series-portrait.jpg")
+
+
+    def test_create_live_channel_item_content_landscape_used_when_no_series_landscape(
+            self) -> None:
+        """SUCCESS → content.image.landscapeUrl used as fanart when series has no landscape."""
+
+        result_set = self._live_result_set(content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response(
+                       landscape_url="https://example.com/content-landscape.jpg",
+                       series_landscape_url=None)):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.fanart, "https://example.com/content-landscape.jpg")
+
+
+    def test_create_live_channel_item_content_portrait_used_when_no_series_portrait(
+            self) -> None:
+        """SUCCESS → content.image.portraitUrl used as poster when series has no portrait."""
+
+        result_set = self._live_result_set(content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response(
+                       portrait_url="https://example.com/content-portrait.jpg",
+                       series_portrait_url=None)):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.poster, "https://example.com/content-portrait.jpg")
+
+
+    def test_create_live_channel_item_broadcaster_logo_used_as_fanart_fallback(self) -> None:
+        """SUCCESS → broadcaster logo used as fanart when no landscape is available."""
+
+        result_set = self._live_result_set(content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response(
+                       landscape_url="",
+                       series_landscape_url=None,
+                       broadcaster_logo_url="https://example.com/broadcaster.png")):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.fanart, "https://example.com/broadcaster.png")
+
+
+    def test_create_live_channel_item_broadcaster_logo_not_used_when_fanart_exists(
+            self) -> None:
+        """SUCCESS → existing fanart is not replaced by broadcaster logo."""
+
+        result_set = self._live_result_set(
+            landscape_url="https://example.com/prog-landscape.jpg",
+            content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response(
+                       landscape_url="",
+                       series_landscape_url=None,
+                       broadcaster_logo_url="https://example.com/broadcaster.png")):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.fanart, "https://example.com/prog-landscape.jpg")
+
+
+    def test_create_live_channel_item_broadcaster_logo_used_as_poster_fallback(self) -> None:
+        """SUCCESS → broadcaster logo used as poster when no portrait is available."""
+
+        result_set = self._live_result_set(content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response(
+                       portrait_url=None,
+                       series_portrait_url=None,
+                       broadcaster_logo_url="https://example.com/broadcaster.png")):
+            item = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(item.poster, "https://example.com/broadcaster.png")
+
+
+    def test_create_live_channel_item_item_detail_cache_avoids_second_http_call(self) -> None:
+        """Second call with the same content_item_id hits the cache, not the network."""
+
+        result_set = self._live_result_set(content_item_id="item-001")
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=self._detail_response()) as mock_open:
+            item1 = self.channel.create_live_channel_item(result_set)
+            item2 = self.channel.create_live_channel_item(result_set)
+
+        self.assertEqual(mock_open.call_count, 1)
+        self.assertEqual(item2.description, "[B]The Series[/B]\n\nA great show")
+
+    # -- update_live_item --------------------------------------------------
+
+    def test_update_live_item_success(self) -> None:
+        """update_live_item() with a valid handshake response marks item complete."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {
+                "licenseUrl": "https://license.example.com/",
+                "headers": {"Authorization": "Bearer tok"}
+            }
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=handshake_response), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.set_setting"), \
+             patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+             patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+
+
+    def test_update_live_item_no_channel_id_returns_item(self) -> None:
+        """update_live_item() with a URL that has no channel= returns without crash."""
+
+        from resources.lib.mediaitem import MediaItem
+        item = MediaItem("Test", "https://example.com/no-channel-param")
+        result = self.channel.update_live_item(item)
+        self.assertIsNotNone(result)
+        self.assertFalse(result.complete)
+
+
+    def test_update_live_item_extra_query_params_do_not_corrupt_channel_id(self) -> None:
+        """update_live_item() extracts channel ID correctly even with extra query parameters."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        expected_channel_id = result_set["channel"]["content"]["id"]
+        item.url += "&extra=param"
+
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://lic.example.com/", "headers": {}}
+        })
+        captured_url = []
+
+
+        def capture_open(url: str, **kwargs: Any) -> str:
+            captured_url.append(url)
+            return handshake_response
+
+        with patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+             patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+
+        self.assertTrue(updated.complete)
+        self.assertTrue(
+            any(f"channel={expected_channel_id}" in u and "extra=param" not in u
+                for u in captured_url),
+            f"Expected clean channel ID in handshake URL, got: {captured_url}")
+
+
+    def test_update_live_item_non_json_handshake_returns_incomplete(self) -> None:
+        """update_live_item() with a non-JSON handshake response returns without crash."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value="<html>Service Unavailable</html>"):
+            result = self.channel.update_live_item(item)
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result.complete)
+
+
+    def test_update_live_item_has_no_start_offset(self) -> None:
+        """update_live_item() with padding disabled does not add startOffsetInSeconds."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://lic.example.com/", "headers": {}}
+        })
+        captured_url = []
+
+
+        def capture_open(url: str, **kwargs: Any) -> str:
+            captured_url.append(url)
+            return handshake_response
+
+
+        def no_padding(channel: Any, setting_id: str, value_for_none: Any = None, store: Any = None) -> str:
+            return "false" if setting_id == "nlziet_restart_padding" else "0"
+
+        with patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.get_channel_setting",
+                   side_effect=no_padding), \
+             patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+             patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+
+        self.assertTrue(updated.complete)
+        self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
+
+    # -- update_live_item: restart padding + live offset ---------------------
+
+    def _channel_setting_side_effect(self, padding_value: str, slider_value: str = "0") -> Any:
+        def _side_effect(channel: Any, setting_id: str, value_for_none: Any = None, store: Any = None) -> Optional[str]:
+            if setting_id == "nlziet_restart_padding":
+                return padding_value
+            if setting_id == "nlziet_live_start_offset":
+                return slider_value
+            return None
+        return _side_effect
+
+
+    def _make_live_update_mocks(self, padding_value: str, slider_value: str = "0",
+                                appconfig_padding: int = 0) -> Any:
+        """Return (captured_url, context_managers) for update_live_item tests."""
+
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://lic.example.com/", "headers": {}}
+        })
+        appconfig_json = json.dumps({"liveStreamRestartStartPadding": appconfig_padding})
+        captured_url = []
+
+
+        def capture_open(url: str, **kwargs: Any) -> str:
+            captured_url.append(url)
+            return handshake_response
+
+
+        def get_setting_side_effect(setting_id: str, store: Any = None) -> str:
+            if setting_id == "nlziet_appconfig":
+                return appconfig_json
+            return ""
+
+        return captured_url, [
+            patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open),
+            patch("resources.lib.addonsettings.AddonSettings.get_setting",
+                  side_effect=get_setting_side_effect),
+            patch("resources.lib.addonsettings.AddonSettings.get_channel_setting",
+                  side_effect=self._channel_setting_side_effect(padding_value, slider_value)),
+            patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"),
+            patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"),
+        ]
+
+
+
+    def test_update_live_item_total_offset_clamped_to_zero(self) -> None:
+        """update_live_item() omits startOffsetInSeconds when combined total is negative."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "-120", appconfig_padding=30)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
+
+
+    def test_update_live_item_padding_off_no_offset(self) -> None:
+        """update_live_item() omits startOffsetInSeconds when padding toggle is off."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("false", "0", appconfig_padding=180)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
+
+
+
+    # -- __init__ device-flow branch -----------------------
+
+    def test_init_device_flow_uses_device_app_name(self) -> None:
+        """Channel.__init__ uses NLZIET_APP_NAME/VERSION when the device client is active."""
+
+        from resources.lib.addonsettings import AddonSettings, LOCAL
+        import chn_nlziet
+
+        channel_guid = self.channel.guid
+        orig = AddonSettings.get_channel_setting(channel_guid, "authentication_method", store=LOCAL)
+        AddonSettings.set_channel_setting(channel_guid, "authentication_method", "device_auth", store=LOCAL)
+        try:
+            channel = self._switch_channel(None)
+            self.assertEqual(channel._nlziet_headers["Nlziet-AppName"], chn_nlziet.NLZIET_APP_NAME)
+            self.assertEqual(channel._nlziet_headers["Nlziet-AppVersion"], chn_nlziet.NLZIET_APP_VERSION)
+            self.assertEqual(channel._player_name, chn_nlziet.NLZIET_PLAYER_NAME_DEVICE)
+        finally:
+            AddonSettings.set_channel_setting(channel_guid, "authentication_method", orig or "", store=LOCAL)
+            self._switch_channel(None)
+
+    # -- _handle_stream_handshake branches ---------------------------------
+
+    def test_update_live_item_http_error_returns_incomplete(self) -> None:
+        """update_live_item() with an HTTP error returns an incomplete item."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        UriHandler.instance().status = UriStatus(code=503, url=None, error=True, reason="Service Unavailable")
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""):
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+
+    def test_update_live_item_errors_string_list_returns_incomplete(self) -> None:
+        """String-list error in handshake marks item incomplete."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({"errors": ["Access denied — subscription required"]})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""):
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+
+    def test_update_live_item_errors_empty_dict_values_returns_incomplete(self) -> None:
+        """Dict errors whose values flatten to [] are handled gracefully."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({"errors": {"field": []}})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""):
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+
+    def test_update_live_item_errors_typed_dict_returns_incomplete(self) -> None:
+        """Typed error object in handshake is logged and item is incomplete."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({"errors": [{"type": "Unauthorized", "message": "Not allowed"}]})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""):
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+
+    def test_update_live_item_errors_max_streams_shows_dialog(self) -> None:
+        """MaximumStreamsReached error triggers the dialog."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({
+            "errors": [{"type": "MaximumStreamsReached",
+                        "data": {"maximumNumberOfStreams": 2},
+                        "message": "Max streams reached"}]
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch("resources.lib.xbmcwrapper.XbmcWrapper.show_dialog") as mock_dialog:
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+        mock_dialog.assert_called_once()
+
+    def test_update_live_item_errors_missing_subscription_shows_dialog(self) -> None:
+        """MissingSubscriptionFeature error triggers the subscription dialog."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({
+            "errors": [{"type": "MissingSubscriptionFeature", "message": "No subscription"}]
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch("resources.lib.xbmcwrapper.XbmcWrapper.show_dialog") as mock_dialog:
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+        mock_dialog.assert_called_once()
+
+
+    def test_update_live_item_errors_unauthorized_logged_on_shows_dialog(self) -> None:
+        """Unauthorized error while session is active shows the stream dialog without login prompt."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({
+            "errors": [{"type": "Unauthorized", "message": "Not allowed"}]
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch.object(type(self.channel), "loggedOn",
+                             new_callable=PropertyMock, return_value=True), \
+                patch("resources.lib.xbmcwrapper.XbmcWrapper.show_dialog") as mock_dialog:
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+        mock_dialog.assert_called_once()
+        dialog_msg = mock_dialog.call_args[0][1]
+        self.assertNotIn("\n", dialog_msg)
+
+
+    def test_update_live_item_errors_unauthorized_logged_out_appends_login_prompt(self) -> None:
+        """Unauthorized error with expired session appends the login reminder."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({
+            "errors": [{"type": "Unauthorized", "message": "Not allowed"}]
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch.object(type(self.channel), "loggedOn",
+                             new_callable=PropertyMock, return_value=False), \
+                patch("resources.lib.xbmcwrapper.XbmcWrapper.show_dialog") as mock_dialog:
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+        mock_dialog.assert_called_once()
+        dialog_msg = mock_dialog.call_args[0][1]
+        self.assertIn("\n", dialog_msg)
+
+
+    def test_update_live_item_errors_channel_not_found_shows_dialog(self) -> None:
+        """ChannelNotFound error triggers the channel-unavailable dialog."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({
+            "errors": [{"type": "ChannelNotFound", "message": "Channel not found"}]
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch("resources.lib.xbmcwrapper.XbmcWrapper.show_dialog") as mock_dialog:
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+        mock_dialog.assert_called_once()
+
+
+    def test_update_live_item_errors_invalid_asset_shows_dialog(self) -> None:
+        """InvalidAsset error triggers the content-not-playable dialog."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({
+            "errors": [{"type": "InvalidAsset", "message": "Asset invalid"}]
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch("resources.lib.xbmcwrapper.XbmcWrapper.show_dialog") as mock_dialog:
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+        mock_dialog.assert_called_once()
+
+
+    def test_update_live_item_no_manifest_url_returns_incomplete(self) -> None:
+        """Handshake response without manifestUrl returns an incomplete item."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""):
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+
+    def test_update_live_item_no_drm_completes_without_license(self) -> None:
+        """Handshake with manifestUrl but no DRM completes the item without a license key (line 284)."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        response = json.dumps({"manifestUrl": "https://example.com/stream.mpd"})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            result = self.channel.update_live_item(item)
+        self.assertTrue(result.complete)
+
+    # -- _set_profile_id / _clear_profile_id ------
+
+    def test_set_profile_id_stores_value(self) -> None:
+        """_set_profile_id() persists the profile ID via AddonSettings."""
+
+        with patch("resources.lib.addonsettings.AddonSettings.set_setting") as mock_set:
+            self.channel._set_profile_id("test-profile-uuid")
+        self.assertEqual(mock_set.call_count, 1)
+        args, _ = mock_set.call_args
+        self.assertEqual(args[0], "nlziet_profile_id")
+        self.assertEqual(args[1], "test-profile-uuid")
+
+    def test_clear_profile_id_clears_stored_value(self) -> None:
+        """_clear_profile_id() writes an empty string to the profile ID setting."""
+
+        with patch("resources.lib.addonsettings.AddonSettings.set_setting") as mock_set:
+            self.channel._clear_profile_id()
+        self.assertEqual(mock_set.call_count, 1)
+        args, _ = mock_set.call_args
+        self.assertEqual(args[0], "nlziet_profile_id")
+        self.assertEqual(args[1], "")
+
+    # -- _list_profiles exception --------------------------
+
+    def test_list_profiles_parse_exception_returns_empty(self) -> None:
+        """_list_profiles() returns [] when JSON parsing raises an exception."""
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value="[1,2,3]"), \
+                patch("chn_nlziet.JsonHelper", side_effect=Exception("unexpected parse error")):
+            result = self.channel._list_profiles()
+        self.assertEqual(result, [])
+
+    # -- _select_profile failure paths -----------
+
+    def test_select_profile_stored_claim_fails_clears_and_retries(self) -> None:
+        """Stale stored profile clears itself and retries with fresh list."""
+
+        profiles = [{"id": "new-id", "displayName": "New User"}]
+        with patch.object(self.channel, "_get_profile_id", return_value="stale-id"), \
+                patch.object(type(self.channel._handler), "token_profile_id",
+                             new_callable=PropertyMock, return_value="other-id"), \
+                patch.object(self.channel._handler, "set_profile_claim", side_effect=[False, True]), \
+                patch.object(self.channel, "_list_profiles", return_value=profiles), \
+                patch.object(self.channel, "_set_profile_id"), \
+                patch.object(self.channel, "_clear_profile_id") as mock_clear:
+            result = self.channel._select_profile()
+        mock_clear.assert_called_once()
+        self.assertTrue(result)
+
+    def test_select_profile_single_auto_select_claim_fails_returns_false(self) -> None:
+        """Auto-selecting the only profile returns False when set_profile_claim fails (line 490)."""
+
+        profile = {"id": "p1", "displayName": "User1"}
+        with patch.object(self.channel, "_get_profile_id", return_value=""), \
+                patch.object(self.channel, "_list_profiles", return_value=[profile]), \
+                patch.object(self.channel._handler, "set_profile_claim", return_value=False):
+            result = self.channel._select_profile()
+        self.assertFalse(result)
+
+    def test_select_profile_multi_select_claim_fails_returns_false(self) -> None:
+        """Multi-profile selection returns False when set_profile_claim fails (line 505)."""
+
+        profiles = [{"id": "p1", "displayName": "A"}, {"id": "p2", "displayName": "B"}]
+        with patch.object(self.channel, "_get_profile_id", return_value=""), \
+                patch.object(self.channel, "_list_profiles", return_value=profiles), \
+                patch("resources.lib.xbmcwrapper.XbmcWrapper.show_selection_dialog", return_value=0), \
+                patch.object(self.channel._handler, "set_profile_claim", return_value=False):
+            result = self.channel._select_profile()
+        self.assertFalse(result)
+
+    # -- log_on: select_profile failure → log_off ---------
+
+    def test_log_on_select_profile_fails_logs_off_returns_false(self) -> None:
+        """log_on() calls log_off and returns False when profile selection fails."""
+
+        from resources.lib.authentication.authenticationresult import AuthenticationResult
+        mock_result = AuthenticationResult("user@test.nl")
+        mock_result.logged_on = True
+        mock_result.existing_login = True
+        with patch.object(self.channel._authenticator, "log_on", return_value=mock_result), \
+                patch.object(self.channel, "_select_profile", return_value=False), \
+                patch.object(self.channel, "log_off") as mock_log_off:
+            result = self.channel.log_on()
+        self.assertFalse(result)
+        mock_log_off.assert_called_once()
+
+    # -- _sync_appconfig error paths -------------
+
+    def test_sync_appconfig_http_error_returns_early(self) -> None:
+        """_sync_appconfig() returns early without writing when the HTTP request fails."""
+
+        UriHandler.instance().status = UriStatus(code=403, url=None, error=True, reason="Forbidden")
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                patch("resources.lib.addonsettings.AddonSettings.set_setting") as mock_set:
+            self.channel._sync_appconfig()
+        mock_set.assert_not_called()
+
+    def test_sync_appconfig_bad_cached_value_handles_gracefully(self) -> None:
+        """_sync_appconfig() treats corrupt cached JSON as an empty baseline without raising."""
+
+        import chn_nlziet
+        good_response = json.dumps({"heartbeatInterval": 120, "isAppBlocked": False})
+
+        def get_setting_side_effect(setting_id: str, store: Any = None) -> str:
+            if setting_id == chn_nlziet.APPCONFIG_CACHE_KEY:
+                return "[corrupt-json{"
+            return ""
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=good_response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting",
+                      side_effect=get_setting_side_effect), \
+                patch("resources.lib.addonsettings.AddonSettings.set_setting"):
+            self.channel._sync_appconfig()
+        self.assertEqual(chn_nlziet.Channel.service_interval, 120)
+
+
+    # -- _add_metadata_item: genre label -----------------------------------
+
+    @staticmethod
+    def _make_item() -> "MediaItem":
+        from resources.lib.mediaitem import MediaItem
+        return MediaItem("Test Item", "https://example.com")
+
+
+    def test_genre_single_name_is_set_as_label(self) -> None:
+        """SUCCESS → single genre name is written as the Genre info-label."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["g-1"] = {"genres": [{"name": "Drama"}]}
+        self.channel._add_metadata_item(item, "g-1")
+        self.assertEqual(item.get_info_label("Genre"), "Drama")
+
+
+    def test_genre_multiple_names_joined_with_comma(self) -> None:
+        """SUCCESS → multiple genre names are joined with \", \"."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["g-2"] = {
+            "genres": [{"name": "Drama"}, {"name": "Thriller"}]
+        }
+        self.channel._add_metadata_item(item, "g-2")
+        self.assertEqual(item.get_info_label("Genre"), "Drama, Thriller")
+
+
+    def test_genre_absent_key_does_not_set_label(self) -> None:
+        """genres key absent from detail dict → Genre label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["g-3"] = {}
+        self.channel._add_metadata_item(item, "g-3")
+        self.assertFalse(item.has_info_label("Genre"))
+
+
+    def test_genre_empty_list_does_not_set_label(self) -> None:
+        """genres is an empty list → Genre label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["g-4"] = {"genres": []}
+        self.channel._add_metadata_item(item, "g-4")
+        self.assertFalse(item.has_info_label("Genre"))
+
+
+    def test_genre_all_missing_name_key_does_not_set_label(self) -> None:
+        """All genre dicts lack the 'name' key → Genre label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["g-5"] = {
+            "genres": [{"id": "1"}, {"id": "2"}]
+        }
+        self.channel._add_metadata_item(item, "g-5")
+        self.assertFalse(item.has_info_label("Genre"))
+
+
+    def test_genre_all_empty_string_names_does_not_set_label(self) -> None:
+        """All genre names are empty strings → Genre label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["g-6"] = {
+            "genres": [{"name": ""}, {"name": ""}]
+        }
+        self.channel._add_metadata_item(item, "g-6")
+        self.assertFalse(item.has_info_label("Genre"))
+
+
+    def test_genre_all_none_names_does_not_set_label(self) -> None:
+        """All genre names are None → Genre label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["g-7"] = {"genres": [{"name": None}]}
+        self.channel._add_metadata_item(item, "g-7")
+        self.assertFalse(item.has_info_label("Genre"))
+
+
+    def test_genre_filters_out_dicts_without_name_key(self) -> None:
+        """Genre dicts missing 'name' key are skipped; named entries are joined."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["g-8"] = {
+            "genres": [{"name": "Drama"}, {"id": "no-name"}]
+        }
+        self.channel._add_metadata_item(item, "g-8")
+        self.assertEqual(item.get_info_label("Genre"), "Drama")
+
+
+    def test_genre_filters_out_empty_string_name(self) -> None:
+        """Genre dict with empty string name is skipped; named entries are joined."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["g-9"] = {
+            "genres": [{"name": "Drama"}, {"name": ""}]
+        }
+        self.channel._add_metadata_item(item, "g-9")
+        self.assertEqual(item.get_info_label("Genre"), "Drama")
+
+
+    def test_genre_filters_out_none_name(self) -> None:
+        """Genre dict with None name is skipped; named entries are joined."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["g-10"] = {
+            "genres": [{"name": "Drama"}, {"name": None}]
+        }
+        self.channel._add_metadata_item(item, "g-10")
+        self.assertEqual(item.get_info_label("Genre"), "Drama")
+
+
+    # -- _add_metadata_item: nicam/Mpaa label ------------------------------
+
+    def test_nicam_age_sets_mpaa_label(self) -> None:
+        """SUCCESS → numeric NICAM age is formatted and set as the Mpaa label."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["n-1"] = {"nicam": {"age": "16"}}
+        self.channel._add_metadata_item(item, "n-1")
+        self.assertEqual(item.get_info_label("Mpaa"), "NICAM 16+")
+
+
+    def test_nicam_allages_does_not_set_mpaa_label(self) -> None:
+        """AllAges NICAM rating → Mpaa label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["n-2"] = {"nicam": {"age": "AllAges"}}
+        self.channel._add_metadata_item(item, "n-2")
+        self.assertFalse(item.has_info_label("Mpaa"))
+
+
+    def test_nicam_key_absent_does_not_set_mpaa_label(self) -> None:
+        """nicam key absent from detail → Mpaa label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["n-3"] = {}
+        self.channel._add_metadata_item(item, "n-3")
+        self.assertFalse(item.has_info_label("Mpaa"))
+
+
+    def test_nicam_empty_dict_does_not_set_mpaa_label(self) -> None:
+        """nicam present but empty → Mpaa label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["n-4"] = {"nicam": {}}
+        self.channel._add_metadata_item(item, "n-4")
+        self.assertFalse(item.has_info_label("Mpaa"))
+
+
+    def test_nicam_age_key_absent_does_not_set_mpaa_label(self) -> None:
+        """nicam present but age key absent → Mpaa label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["n-5"] = {"nicam": {"locale": "nl"}}
+        self.channel._add_metadata_item(item, "n-5")
+        self.assertFalse(item.has_info_label("Mpaa"))
+
+
+    def test_nicam_age_empty_string_does_not_set_mpaa_label(self) -> None:
+        """nicam age is empty string → Mpaa label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["n-6"] = {"nicam": {"age": ""}}
+        self.channel._add_metadata_item(item, "n-6")
+        self.assertFalse(item.has_info_label("Mpaa"))
+
+
+    def test_nicam_age_none_does_not_set_mpaa_label(self) -> None:
+        """nicam age is None → Mpaa label is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["n-7"] = {"nicam": {"age": None}}
+        self.channel._add_metadata_item(item, "n-7")
+        self.assertFalse(item.has_info_label("Mpaa"))
+
+
+    # -- _add_metadata_item: series_title ----------------------------------
+
+    def test_series_title_is_set_on_item(self) -> None:
+        """SUCCESS → series title is written to tv_show_title."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["s-1"] = {"series": {"title": "Breaking Bad"}}
+        self.channel._add_metadata_item(item, "s-1")
+        self.assertEqual(item.tv_show_title, "Breaking Bad")
+
+
+    def test_series_key_absent_does_not_set_tv_show_title(self) -> None:
+        """series key absent from detail → tv_show_title is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["s-2"] = {}
+        self.channel._add_metadata_item(item, "s-2")
+        self.assertFalse(item.tv_show_title)
+
+
+    def test_series_empty_dict_does_not_set_tv_show_title(self) -> None:
+        """series present but empty → tv_show_title is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["s-3"] = {"series": {}}
+        self.channel._add_metadata_item(item, "s-3")
+        self.assertFalse(item.tv_show_title)
+
+
+    def test_series_title_key_absent_does_not_set_tv_show_title(self) -> None:
+        """series present but title key absent → tv_show_title is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["s-4"] = {"series": {"id": "123"}}
+        self.channel._add_metadata_item(item, "s-4")
+        self.assertFalse(item.tv_show_title)
+
+
+    def test_series_title_empty_string_does_not_set_tv_show_title(self) -> None:
+        """series title is empty string → tv_show_title is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["s-5"] = {"series": {"title": ""}}
+        self.channel._add_metadata_item(item, "s-5")
+        self.assertFalse(item.tv_show_title)
+
+
+    def test_series_title_none_does_not_set_tv_show_title(self) -> None:
+        """series title is None → tv_show_title is not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["s-6"] = {"series": {"title": None}}
+        self.channel._add_metadata_item(item, "s-6")
+        self.assertFalse(item.tv_show_title)
+
+
+    # -- _add_metadata_item: series_image ----------------------------------
+
+    def test_series_image_landscape_sets_fanart(self) -> None:
+        """SUCCESS → series landscapeUrl is set as fanart."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["si-1"] = {
+            "series": {"image": {"landscapeUrl": "https://example.com/series-land.jpg"}}
+        }
+        self.channel._add_metadata_item(item, "si-1")
+        self.assertEqual(item.fanart, "https://example.com/series-land.jpg")
+
+
+    def test_series_image_portrait_sets_poster(self) -> None:
+        """SUCCESS → series portraitUrl is set as poster."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["si-2"] = {
+            "series": {"image": {"portraitUrl": "https://example.com/series-port.jpg"}}
+        }
+        self.channel._add_metadata_item(item, "si-2")
+        self.assertEqual(item.poster, "https://example.com/series-port.jpg")
+
+
+    def test_series_image_empty_dict_does_not_set_fanart_or_poster(self) -> None:
+        """series image present but empty → fanart and poster not set from series."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["si-3"] = {"series": {"image": {}}}
+        self.channel._add_metadata_item(item, "si-3")
+        self.assertFalse(item.fanart)
+        self.assertFalse(item.poster)
+
+
+    def test_series_image_landscape_none_does_not_set_fanart(self) -> None:
+        """series landscapeUrl is None → fanart not set from series."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["si-4"] = {
+            "series": {"image": {"landscapeUrl": None}}
+        }
+        self.channel._add_metadata_item(item, "si-4")
+        self.assertFalse(item.fanart)
+
+
+    def test_series_image_portrait_none_does_not_set_poster(self) -> None:
+        """series portraitUrl is None → poster not set from series."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["si-5"] = {
+            "series": {"image": {"portraitUrl": None}}
+        }
+        self.channel._add_metadata_item(item, "si-5")
+        self.assertFalse(item.poster)
+
+
+    # -- _add_metadata_item: broadcasters ----------------------------------
+
+
+    def test_broadcaster_logo_sets_fanart_and_poster_as_fallback(self) -> None:
+        """SUCCESS → broadcasters[0].logoUrl sets fanart and poster when no other images."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["b-1"] = {
+            "broadcasters": [{"logoUrl": "https://example.com/logo.png"}]
+        }
+        self.channel._add_metadata_item(item, "b-1")
+        self.assertEqual(item.fanart, "https://example.com/logo.png")
+        self.assertEqual(item.poster, "https://example.com/logo.png")
+
+
+    def test_broadcaster_logo_not_used_when_series_landscape_present(self) -> None:
+        """series landscapeUrl takes priority over broadcaster logo for fanart."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["b-2"] = {
+            "broadcasters": [{"logoUrl": "https://example.com/logo.png"}],
+            "series": {"image": {"landscapeUrl": "https://example.com/series-land.jpg"}},
+        }
+        self.channel._add_metadata_item(item, "b-2")
+        self.assertEqual(item.fanart, "https://example.com/series-land.jpg")
+
+
+    def test_broadcaster_logo_not_used_when_content_landscape_present(self) -> None:
+        """detail image landscapeUrl takes priority over broadcaster logo for fanart."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["b-3"] = {
+            "broadcasters": [{"logoUrl": "https://example.com/logo.png"}],
+            "image": {"landscapeUrl": "https://example.com/content-land.jpg"},
+        }
+        self.channel._add_metadata_item(item, "b-3")
+        self.assertEqual(item.fanart, "https://example.com/content-land.jpg")
+
+
+    def test_broadcaster_key_absent_does_not_set_fanart(self) -> None:
+        """broadcasters key absent → fanart not set from broadcaster."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["b-4"] = {}
+        self.channel._add_metadata_item(item, "b-4")
+        self.assertFalse(item.fanart)
+        self.assertFalse(item.poster)
+
+
+    def test_broadcaster_empty_list_does_not_set_fanart(self) -> None:
+        """broadcasters is empty list → fanart not set from broadcaster."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["b-5"] = {"broadcasters": []}
+        self.channel._add_metadata_item(item, "b-5")
+        self.assertFalse(item.fanart)
+        self.assertFalse(item.poster)
+
+
+    def test_broadcaster_logo_url_key_absent_does_not_set_fanart(self) -> None:
+        """broadcasters[0] has no logoUrl key → fanart not set from broadcaster."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["b-6"] = {"broadcasters": [{"name": "RTL"}]}
+        self.channel._add_metadata_item(item, "b-6")
+        self.assertFalse(item.fanart)
+        self.assertFalse(item.poster)
+
+
+    def test_broadcaster_logo_url_none_does_not_set_fanart(self) -> None:
+        """broadcasters[0].logoUrl is None → fanart not set from broadcaster."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["b-7"] = {
+            "broadcasters": [{"logoUrl": None}]
+        }
+        self.channel._add_metadata_item(item, "b-7")
+        self.assertFalse(item.fanart)
+        self.assertFalse(item.poster)
+
+
+    def test_broadcaster_logo_url_empty_string_does_not_set_fanart(self) -> None:
+        """broadcasters[0].logoUrl is empty string → fanart not set from broadcaster."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["b-8"] = {
+            "broadcasters": [{"logoUrl": ""}]
+        }
+        self.channel._add_metadata_item(item, "b-8")
+        self.assertFalse(item.fanart)
+        self.assertFalse(item.poster)
+
+
+    # -- _add_metadata_item: detail image ----------------------------------
+
+
+    def test_detail_image_landscape_sets_fanart(self) -> None:
+        """SUCCESS → detail image landscapeUrl is set as fanart when no series images."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["di-1"] = {
+            "image": {"landscapeUrl": "https://example.com/content-land.jpg"}
+        }
+        self.channel._add_metadata_item(item, "di-1")
+        self.assertEqual(item.fanart, "https://example.com/content-land.jpg")
+
+
+    def test_detail_image_portrait_sets_poster(self) -> None:
+        """SUCCESS → detail image portraitUrl is set as poster when no series images."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["di-2"] = {
+            "image": {"portraitUrl": "https://example.com/content-port.jpg"}
+        }
+        self.channel._add_metadata_item(item, "di-2")
+        self.assertEqual(item.poster, "https://example.com/content-port.jpg")
+
+
+    def test_detail_image_key_absent_does_not_set_fanart_or_poster(self) -> None:
+        """image key absent → fanart and poster not set from detail image."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["di-3"] = {}
+        self.channel._add_metadata_item(item, "di-3")
+        self.assertFalse(item.fanart)
+        self.assertFalse(item.poster)
+
+
+    def test_detail_image_empty_dict_does_not_set_fanart_or_poster(self) -> None:
+        """image key present but empty dict → fanart and poster not set from detail image."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["di-4"] = {"image": {}}
+        self.channel._add_metadata_item(item, "di-4")
+        self.assertFalse(item.fanart)
+        self.assertFalse(item.poster)
+
+
+    def test_detail_image_landscape_none_does_not_set_fanart(self) -> None:
+        """detail image landscapeUrl is None → fanart not set from detail image."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["di-5"] = {
+            "image": {"landscapeUrl": None}
+        }
+        self.channel._add_metadata_item(item, "di-5")
+        self.assertFalse(item.fanart)
+
+
+    def test_detail_image_portrait_none_does_not_set_poster(self) -> None:
+        """detail image portraitUrl is None → poster not set from detail image."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["di-6"] = {
+            "image": {"portraitUrl": None}
+        }
+        self.channel._add_metadata_item(item, "di-6")
+        self.assertFalse(item.poster)
+
+
+    def test_detail_image_series_landscape_takes_priority_over_content(self) -> None:
+        """series landscapeUrl takes priority over detail image landscapeUrl for fanart."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["di-7"] = {
+            "image": {"landscapeUrl": "https://example.com/content-land.jpg"},
+            "series": {"image": {"landscapeUrl": "https://example.com/series-land.jpg"}},
+        }
+        self.channel._add_metadata_item(item, "di-7")
+        self.assertEqual(item.fanart, "https://example.com/series-land.jpg")
+
+
+    # -- _add_metadata_item: description -----------------------------------
+
+
+    def test_description_key_absent_does_not_set_description(self) -> None:
+        """description key absent → item.description not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["desc-1"] = {}
+        self.channel._add_metadata_item(item, "desc-1")
+        self.assertFalse(item.description)
+
+
+    def test_description_empty_string_does_not_set_description(self) -> None:
+        """description is empty string → item.description not set."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["desc-2"] = {"description": ""}
+        self.channel._add_metadata_item(item, "desc-2")
+        self.assertFalse(item.description)
+
+
+    def test_description_no_titles_set_as_plain_description(self) -> None:
+        """description present, no series/episode title → item.description = plain text."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["desc-3"] = {
+            "description": "Some episode description."
+        }
+        self.channel._add_metadata_item(item, "desc-3")
+        self.assertEqual(item.description, "Some episode description.")
+
+
+    def test_description_with_series_title_only(self) -> None:
+        """description + series title, no episode title → bold series header prepended."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["desc-4"] = {
+            "series": {"title": "My Show"},
+            "description": "About this episode.",
+        }
+        self.channel._add_metadata_item(item, "desc-4")
+        self.assertEqual(item.description, "[B]My Show[/B]\n\nAbout this episode.")
+
+
+    def test_description_with_episode_title_only(self) -> None:
+        """description + episode title, no series title → italic episode header prepended."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["desc-5"] = {
+            "title": "Episode One",
+            "description": "About this episode.",
+        }
+        self.channel._add_metadata_item(item, "desc-5")
+        self.assertEqual(item.description, "[I]Episode One[/I]\n\nAbout this episode.")
+
+
+    def test_description_with_series_and_episode_title(self) -> None:
+        """description + both titles → bold series + italic episode header prepended."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["desc-6"] = {
+            "series": {"title": "My Show"},
+            "title": "Episode One",
+            "description": "About this episode.",
+        }
+        self.channel._add_metadata_item(item, "desc-6")
+        self.assertEqual(
+            item.description,
+            "[B]My Show[/B]\n[I]Episode One[/I]\n\nAbout this episode."
+        )
+
+
+    def test_description_episode_title_none_treated_as_absent(self) -> None:
+        """episode title is None → treated as absent, no italic header."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["desc-7"] = {
+            "title": None,
+            "description": "About this episode.",
+        }
+        self.channel._add_metadata_item(item, "desc-7")
+        self.assertEqual(item.description, "About this episode.")
+
+
+    def test_description_series_title_none_treated_as_absent(self) -> None:
+        """series title is None → treated as absent, no bold header."""
+
+        import chn_nlziet
+        item = self._make_item()
+        chn_nlziet.Channel._item_detail_cache["desc-8"] = {
+            "series": {"title": None},
+            "description": "About this episode.",
+        }
+        self.channel._add_metadata_item(item, "desc-8")
+        self.assertEqual(item.description, "About this episode.")
+
+
+class TestNlzietAppconfigLive(ChannelTest):
+    """
+    Live integration tests for appconfig — requires NLZIET_USERNAME in the environment.
+
+    Calls the real endpoint without authentication (the endpoint is public).
+    Guards on NLZIET_USERNAME presence as the 'run live tests' signal so
+    these only execute in environments that have network access and credentials
+    configured.
+    """
+
+
+    def __init__(self, methodName: str) -> None:
+        super().__init__(methodName, "channel.nlziet.nlziet", None)
+
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if (not os.getenv("NLZIET_USERNAME") or
+                not os.getenv("NLZIET_PASSWORD")):
+            raise unittest.SkipTest("NLZIET credentials not in environment.")
+        super().setUpClass()
+
+
+    def setUp(self) -> None:
+        super().setUp()
+        import chn_nlziet
+        self._orig_service_interval = chn_nlziet.Channel.service_interval
+        self._orig_is_blocked = chn_nlziet.Channel.is_blocked
+        self._orig_blocked_reason = chn_nlziet.Channel.blocked_reason
+        self._orig_is_update_required = chn_nlziet.Channel.is_update_required
+        self._orig_update_reason = chn_nlziet.Channel.update_reason
+        # Channel init makes real HTTP calls without credentials; clear stale status.
+        UriHandler.instance().status = UriStatus(code=0, url=None, error=False, reason=None)
+
+
+    def tearDown(self) -> None:
+        import chn_nlziet
+        chn_nlziet.Channel.service_interval = self._orig_service_interval
+        chn_nlziet.Channel.is_blocked = self._orig_is_blocked
+        chn_nlziet.Channel.blocked_reason = self._orig_blocked_reason
+        chn_nlziet.Channel.is_update_required = self._orig_is_update_required
+        chn_nlziet.Channel.update_reason = self._orig_update_reason
+        super().tearDown()
+
+
+    def test_appconfig_unauthenticated(self) -> None:
+        """Real appconfig fetch (no auth) returns parseable JSON with expected keys.
+
+        Acts as a CI canary: fails hard if isAppBlocked, emits DeprecationWarning
+        if isUpdateRequired so the pipeline surfaces it without breaking the build.
+        """
+
+        import chn_nlziet
+        from resources.lib.addonsettings import AddonSettings, LOCAL
+        import warnings
+
+        self.channel._sync_appconfig()
+
+        raw = AddonSettings.get_setting(chn_nlziet.APPCONFIG_CACHE_KEY, store=LOCAL)
+        self.assertIsNotNone(raw, "appconfig was not cached — fetch may have failed")
+        data = json.loads(raw)
+        self.assertIn("heartbeatInterval", data)
+
+        if data.get("isAppBlocked"):
+            reason = data.get("appBlockedReason") or "no reason provided"
+            self.fail(f"NLZIET app is blocked — {reason}")
+
+        if data.get("isUpdateRequired"):
+            Logger.warning(
+                "*** NLZIET API DEPRECATION: isUpdateRequired=True — "
+                "the API client needs updating! updateText: %s",
+                data.get("updateText", ""))
+            warnings.warn(
+                "NLZIET API deprecation: isUpdateRequired=True. "
+                "Update the API client.",
+                DeprecationWarning, stacklevel=2)
+
+
+    def test_sync_appconfig_stores_expected_keys(self) -> None:
+        """_sync_appconfig() parses and stores a response containing the expected keys."""
+
+        import chn_nlziet
+
+        stored = {}
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=json.dumps(MOCK_APPCONFIG_RESPONSE)), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.set_setting",
+                   side_effect=lambda k, v, **kw: stored.update({k: v})):
+            self.channel._sync_appconfig()
+
+        self.assertIn(chn_nlziet.APPCONFIG_CACHE_KEY, stored)
+        data = json.loads(stored[chn_nlziet.APPCONFIG_CACHE_KEY])
+        self.assertIn("heartbeatInterval", data)
 
 
 # Mocked counterpart — always runs
@@ -885,6 +2495,37 @@ class TestNlzietChannelLive(ChannelTest):
         self.assertTrue(self.channel.log_on())
 
 
+    def test_process_folder_list_returns_live_channels(self) -> None:
+        """Live: process_folder_list returns at least one live channel item from the real EPG API."""
+
+        items = self.channel.process_folder_list(None)
+        self.assertGreater(len(items), 0)
+
+
+    def test_update_live_item_returns_stream_url(self) -> None:
+        """Live: update_live_item completes a live channel item with a valid stream URL."""
+
+        main_items = self.channel.process_folder_list(None)
+        self.assertGreater(len(main_items), 0, "No items in main channel list")
+        live_channels = self.channel.process_folder_list(main_items[0])
+        self.assertGreater(len(live_channels), 0, "No live channels returned to test stream update on")
+        with patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(live_channels[0])
+        self.assertTrue(updated.complete)
+
+
+    def test_update_live_item_invalid_channel_id_returns_incomplete(self) -> None:
+        """Live: update_live_item with a bad channel ID returns an incomplete item."""
+
+        from resources.lib.mediaitem import MediaItem
+        item = MediaItem(
+            "Invalid Channel",
+            "https://api.nlziet.nl/v9/epg/programlocations/live?channel=invalid-xyz-9999",
+        )
+        result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+
+
 # =============================================================================
 # Mocked channel tests (run without live credentials)
 # =============================================================================
@@ -944,3 +2585,48 @@ class TestNlzietChannelMocked(TestNlzietChannelLive):
         with unittest.mock.patch("xbmcgui.Dialog.select", return_value=0):
             if not self.channel.log_on():
                 self.skipTest("Mocked NLZIET login failed — check mock token setup.")
+
+    def test_process_folder_list_returns_live_channels(self) -> None:
+        """Mocked: process_folder_list returns channel items from a mock EPG response."""
+
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=json.dumps(MOCK_EPG_LIVE_RESPONSE)), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch("resources.lib.addonsettings.AddonSettings.set_setting"):
+            items = self.channel.process_folder_list(None)
+        self.assertGreater(len(items), 0)
+
+    def test_update_live_item_returns_stream_url(self) -> None:
+        """Mocked: update_live_item completes with a mock handshake response."""
+
+        from resources.lib.mediaitem import MediaItem
+        item = MediaItem(
+            "Test Channel",
+            "https://api.nlziet.nl/v9/epg/programlocations/live?channel=test-live-1",
+        )
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://license.example.com/", "headers": {}},
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=handshake_response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+                patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+
+    def test_update_live_item_invalid_channel_id_returns_incomplete(self) -> None:
+        """Mocked: update_live_item with an API error response returns an incomplete item."""
+
+        from resources.lib.mediaitem import MediaItem
+        item = MediaItem(
+            "Invalid Channel",
+            "https://api.nlziet.nl/v9/epg/programlocations/live?channel=invalid-xyz-9999",
+        )
+        error_response = json.dumps({
+            "errors": [{"type": "ChannelNotFound", "message": "Channel not found"}],
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=error_response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""):
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)

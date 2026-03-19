@@ -1002,7 +1002,7 @@ class Channel:
         :param creator:                         The creator called with the results from the parser
         :type creator:                          (list[str]|dict) -> MediaItem|None|list[MediaItem]
 
-        :param updater:                         The updater called for updating a item
+        :param updater:                         The updater called for updating an item
         :type updater:                          MediaItem -> MediaItem
 
         :param postprocessor:                   The post-processor called
