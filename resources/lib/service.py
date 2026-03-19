@@ -1,17 +1,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import dataclasses
+import os
 import threading
 import time
 from typing import Any, Callable, List, Optional
 
 import xbmc
 
+from resources.lib.channelinfo import ChannelInfo
 from resources.lib.logger import Logger
 from resources.lib.helpers.channelimporter import ChannelIndex
+from resources.lib.retroconfig import Config
 
 MIN_SERVICE_INTERVAL = 60     # 1 minute
 MAX_SERVICE_INTERVAL = 3600   # 60 minutes
+IPTV_INTERVAL_DEFAULT = 1800  # 30 minutes
 
 
 @dataclasses.dataclass
@@ -56,6 +60,32 @@ class RetroService(xbmc.Monitor):
         return interval
 
 
+    def _write_channel_iptv_files(self, channel_entry: ChannelInfo, channel: Any) -> None:
+        """Write per-channel M3U playlist and XMLTV EPG for pvr.iptvsimple."""
+
+        from resources.lib.actions.actionparser import ActionParser
+        from resources.lib.helpers.iptvsimplehelper import IptvSimpleHelper
+
+        iptv_dir = os.path.join(Config.profileDir, "iptv")
+        if not os.path.isdir(iptv_dir):
+            try:
+                os.makedirs(iptv_dir)
+            except OSError as exc:
+                Logger.warning("RetroService: failed to create iptv dir: %s", exc)
+                return
+
+        parser = ActionParser(Config.addonId, 0, "")
+        streams = channel.create_iptv_streams(parser)
+        if streams:
+            playlist_path = IptvSimpleHelper._get_channel_playlist_path(channel_entry.id)
+            IptvSimpleHelper.write_playlist(streams, playlist_path)
+
+        epg = channel.create_iptv_epg(parser)
+        if epg:
+            epg_path = IptvSimpleHelper._get_channel_epg_path(channel_entry.id)
+            IptvSimpleHelper.write_epg(epg, epg_path, streams=streams)
+
+
     def _enroll_channels(self) -> List[_ChannelTask]:
         """Enroll channels that opt into background service tasks."""
 
@@ -77,6 +107,17 @@ class RetroService(xbmc.Monitor):
                     interval=service_interval))
                 Logger.info("RetroService: '%s' [service_update] every %ss",
                             channel_entry.channelName, service_interval)
+
+            if channel_entry.has_iptv:
+                iptv_interval = self._resolve_interval(
+                    getattr(channel, 'iptv_refresh_interval', IPTV_INTERVAL_DEFAULT))
+                tasks.append(_ChannelTask(
+                    channel_name=channel_entry.channelName,
+                    callback=lambda ci=channel_entry, ch=channel: self._write_channel_iptv_files(ci, ch),
+                    last_run=0.0,
+                    interval=iptv_interval))
+                Logger.info("RetroService: '%s' [iptv_service] every %ss",
+                            channel_entry.channelName, iptv_interval)
 
         Logger.info("RetroService: %d task(s) enrolled", len(tasks))
         return tasks
@@ -128,6 +169,22 @@ class RetroService(xbmc.Monitor):
             self._tick(tasks)
 
         Logger.info("RetroService: stopped")
+
+
+    def onNotification(self, sender: str, method: str, data: str) -> None:
+        """Reconfigure IPTV provider instances in response to addon lifecycle events."""
+
+        if method != "System.OnAddonEnabled":
+            return
+
+        if not data:
+            return
+
+        if ("pvr.iptvsimple" in data or
+            "service.iptv.manager" in data):
+            Logger.info("RetroService: pvr.iptvsimple/service.iptv.manager enabled — reconfiguring")
+            from resources.lib.helpers.iptvsimplehelper import IptvSimpleHelper
+            IptvSimpleHelper.setup_iptvsimple()
 
 
     @classmethod

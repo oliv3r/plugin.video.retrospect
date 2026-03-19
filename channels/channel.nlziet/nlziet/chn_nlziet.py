@@ -9,6 +9,7 @@ from typing import Any, List, Optional, Tuple, final
 from urllib.parse import parse_qs, urlparse
 
 from resources.lib import chn_class, mediatype
+from resources.lib.actions import action
 from resources.lib.addonsettings import AddonSettings, LOCAL
 from resources.lib.authentication.authenticator import Authenticator
 from resources.lib.authentication.nlziethandler import (
@@ -52,13 +53,18 @@ API_CONTENT_URL = "https://api.nlziet.nl"
 
 # V7 API
 API_V7_APPCONFIG = "/v7/appconfig"
+API_V7_CURRENT_TIME = "/v7/currenttime"
 
 # V8 API
 API_V8_PROFILE = "/v8/profile"
 
 # V9 API
+API_V9_EPG_DATE = "/v9/epg/programlocations"
 API_V9_EPG_LIVE = "/v9/epg/programlocations/live"
 API_V9_LIVE_HANDSHAKE = "/v9/stream/handshake"
+
+_MS_PER_SECOND = 1000
+NLZIET_MAX_SERVER_TIME_DRIFT = 300  # seconds; discard server timestamp if clock drift exceeds 5 minutes
 
 
 @final
@@ -151,6 +157,191 @@ class Channel(chn_class.Channel):
             return data, items
 
         return data, items
+
+
+    # -- IPTV/EPG handler --------------------------------------------------
+
+    def create_iptv_streams(self, parameter_parser):
+        """Create stream dicts for pvr.iptvsimple."""
+
+        if not self.loggedOn:
+            return []
+
+        raw = UriHandler.open(
+            self._prefix_urls(API_V9_EPG_LIVE),
+            additional_headers=self._handler.get_headers())
+        if not raw:
+            return []
+
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+
+        entries = data.get("data", [])
+        parent = MediaItem(self.channelName, self.mainListUri)
+        items = []
+        streams = []
+        for entry in entries:
+            item = self.create_live_channel_item(entry)
+            if item is None:
+                continue
+
+            channel_content = entry.get("channel", {}).get("content", {})
+            channel_id = channel_content.get("id", "")
+            title = channel_content.get("title", "")
+            logo = channel_content.get("logo", {}).get("normalUrl", "")
+
+            stream_url = parameter_parser.create_action_url(
+                self, action=action.PLAY_VIDEO, item=item, store_id=parent.guid)
+            streams.append({
+                "id": channel_id,
+                "name": title,
+                "logo": logo,
+                "group": self.channelName,
+                "stream": stream_url,
+            })
+            items.append(item)
+
+        if items:
+            parameter_parser.pickler.store_media_items(parent.guid, parent, items)
+        return streams
+
+
+    def create_iptv_epg(self, parameter_parser=None):
+        """Create an EPG dict for pvr.iptvsimple."""
+
+        if not self.loggedOn:
+            return {}
+
+        now_ts = self._get_server_time()
+
+        raw_config = AddonSettings.get_setting(APPCONFIG_CACHE_KEY, store=LOCAL) or "{}"
+        try:
+            config = json.loads(raw_config)
+        except (ValueError, TypeError):
+            config = {}
+        past_days = int(config.get("epgDateRangePastDays", 3))
+        future_days = int(config.get("epgDateRangeFutureDays", 3))
+
+        from datetime import date, timedelta
+        today = date.fromtimestamp(now_ts)
+        epg = {}
+        replay_items = []
+        parent = None
+        if parameter_parser is not None:
+            parent = MediaItem(self.channelName, self.mainListUri)
+
+        for day_offset in range(-past_days, future_days + 1):
+            day = today + timedelta(days=day_offset)
+            date_str = day.isoformat()
+
+            raw = UriHandler.open(
+                self._prefix_urls("{0}?date={1}".format(API_V9_EPG_DATE, date_str)),
+                additional_headers=self._handler.get_headers())
+            if not raw:
+                continue
+
+            try:
+                day_data = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+
+            for channel_entry in day_data.get("data", []):
+                channel_id = channel_entry.get("channel", {}).get("content", {}).get("id")
+                if not channel_id:
+                    continue
+
+                if channel_id not in epg:
+                    epg[channel_id] = []
+
+                for prog in channel_entry.get("programLocations", []):
+                    content = prog.get("content", {})
+                    cid = content.get("contentItemId")
+                    asset_id = content.get("assetId")
+                    start_at = content.get("startAt")
+                    end_at = content.get("endAt")
+                    title = content.get("title")
+                    landscape = (content.get("image") or {}).get("landscapeUrl")
+                    is_replay = content.get("isReplayAllowed", False)
+                    tags = content.get("tags") or []
+                    is_watch_ahead = "WatchInAdvance" in tags
+
+                    if (not title or
+                        not start_at or
+                        not end_at):
+                        continue
+
+                    epg_item = {"start": start_at, "stop": end_at, "title": title}
+                    if landscape:
+                        epg_item["image"] = landscape
+
+                    if (parameter_parser is not None and
+                        parent is not None):
+                        from datetime import datetime
+                        try:
+                            s_ts = datetime.fromisoformat(start_at).timestamp()
+                            e_ts = datetime.fromisoformat(end_at).timestamp()
+                        except (ValueError, TypeError):
+                            s_ts = None
+                            e_ts = None
+
+                        if (is_replay and
+                                e_ts is not None and
+                                e_ts <= now_ts):
+                            replay = self._create_replay_item(cid, asset_id, title, channel_id)
+                            if replay:
+                                epg_item["stream"] = parameter_parser.create_action_url(
+                                    self, action=action.PLAY_VIDEO,
+                                    item=replay, store_id=parent.guid)
+                                replay_items.append(replay)
+                        elif (is_watch_ahead and
+                              s_ts is not None and
+                              s_ts > now_ts):
+                            wa = self._create_replay_item(cid, asset_id, title, channel_id)
+                            if wa:
+                                epg_item["stream"] = parameter_parser.create_action_url(
+                                    self, action=action.PLAY_VIDEO,
+                                    item=wa, store_id=parent.guid)
+                                replay_items.append(wa)
+
+                    epg[channel_id].append(epg_item)
+
+        if (replay_items and
+                parameter_parser is not None and
+                parent is not None):
+            parameter_parser.pickler.store_media_items(parent.guid, parent, replay_items)
+        return epg
+
+
+    def _get_server_time(self) -> float:
+        """Return the server's current Unix timestamp in seconds."""
+
+        raw = UriHandler.open(self._prefix_urls(API_V7_CURRENT_TIME))
+        if not UriHandler.instance().status.error:
+            server_ts = float(raw or 0.0) / _MS_PER_SECOND
+            if abs(server_ts - time.time()) <= NLZIET_MAX_SERVER_TIME_DRIFT:
+                return server_ts
+
+        return time.time()
+
+
+    def _create_replay_item(self, cid, asset_id, title, channel_id):
+        """Build a playable MediaItem for a catchup stream."""
+
+        if (not cid or
+                not channel_id):
+            return None
+
+        url = self._prefix_urls(
+            "{0}?context=Epg&channel={1}&contentItemId={2}"
+            "&drmType=Widevine&sourceType=Dash&playerName=BitmovinWeb".format(
+                API_V9_LIVE_HANDSHAKE, channel_id, cid))
+        item = MediaItem(title, url, media_type=mediatype.VIDEO)
+        item.isGeoLocked = True
+        item.isDrmProtected = True
+        item.HttpHeaders = self._http_headers
+        return item
 
 
     # -- Live channel items ------------------------------------------------

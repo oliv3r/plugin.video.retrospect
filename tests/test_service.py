@@ -3,7 +3,7 @@
 import threading
 import time
 import unittest
-from typing import TYPE_CHECKING, Any, List, Tuple
+from typing import TYPE_CHECKING, Any, Tuple
 from unittest.mock import MagicMock, patch
 
 if TYPE_CHECKING:
@@ -177,11 +177,13 @@ class TestRetroService(unittest.TestCase):
         slow_cb.assert_not_called()
 
     def _make_channel_info(self, name: str, guid: str,
-                           service_interval: Any = None) -> Tuple[MagicMock, MagicMock]:
+                           service_interval: Any = None,
+                           has_iptv: bool = False) -> Tuple[MagicMock, MagicMock]:
         """Build a minimal ChannelInfo-like mock."""
         ci = MagicMock()
         ci.channelName = name
         ci.guid = guid
+        ci.has_iptv = has_iptv
         channel = MagicMock()
         channel.service_interval = service_interval
         ci.get_channel.return_value = channel
@@ -201,6 +203,23 @@ class TestRetroService(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].interval, 60)
         self.assertEqual(tasks[0].channel_name, "TestCh")
+
+    def test_enroll_registers_iptv_only_channel(self) -> None:
+        """_enroll_channels() registers an iptv task for a channel with has_iptv=True."""
+        from resources.lib.service import RetroService, IPTV_INTERVAL_DEFAULT
+
+        ci, ch = self._make_channel_info("IptvCh", "guid-iptv",
+                                         service_interval=None, has_iptv=True)
+        ch.iptv_refresh_interval = IPTV_INTERVAL_DEFAULT
+
+        with patch('resources.lib.service.ChannelIndex') as mock_ci:
+            mock_ci.get_register.return_value.get_channels.return_value = [ci]
+            instance = RetroService()
+            tasks = instance._enroll_channels()
+
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].interval, IPTV_INTERVAL_DEFAULT)
+        self.assertEqual(tasks[0].channel_name, "IptvCh")
 
     def test_enroll_clamps_interval_above_max(self) -> None:
         """_enroll_channels() clamps intervals exceeding MAX_SERVICE_INTERVAL."""
