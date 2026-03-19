@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import os
+import tempfile
 import time
 import unittest
-from typing import TYPE_CHECKING, Any, List, Tuple
+from typing import TYPE_CHECKING, Any, Tuple
 from unittest.mock import MagicMock, patch
 
 if TYPE_CHECKING:
@@ -28,6 +30,20 @@ class TestRetroService(unittest.TestCase):
     def setUp(self) -> None:
         pass
 
+    def test_run_calls_setup_iptvsimple_at_startup(self) -> None:
+        """_run() calls IptvSimpleHelper.setup_iptvsimple() before entering the loop."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        instance.waitForAbort = MagicMock(return_value=True)
+
+        with patch('resources.lib.helpers.iptvsimplehelper.IptvSimpleHelper.setup_iptvsimple') as mock_setup, \
+                patch('resources.lib.service.RetroService._iptv_active', return_value=True), \
+                patch.object(instance, '_enroll_channels', return_value=[]):
+            instance._run()
+
+        mock_setup.assert_called_once_with()
+
     def test_run_exits_when_no_service_channels(self) -> None:
         """_run() exits without entering the waitForAbort loop when no tasks are enrolled."""
         from resources.lib.service import RetroService
@@ -35,7 +51,8 @@ class TestRetroService(unittest.TestCase):
         instance = RetroService()
         instance.waitForAbort = MagicMock(return_value=True)
 
-        with patch.object(instance, '_enroll_channels', return_value=[]):
+        with patch('resources.lib.helpers.iptvsimplehelper.IptvSimpleHelper.setup_iptvsimple'), \
+                patch.object(instance, '_enroll_channels', return_value=[]):
             instance._run()
 
         instance.waitForAbort.assert_not_called()
@@ -48,10 +65,25 @@ class TestRetroService(unittest.TestCase):
         instance.waitForAbort = MagicMock(return_value=True)
         task = _ChannelTask("Ch", MagicMock(), 0.0, 10)
 
-        with patch.object(instance, '_enroll_channels', return_value=[task]):
+        with patch('resources.lib.helpers.iptvsimplehelper.IptvSimpleHelper.setup_iptvsimple'), \
+                patch.object(instance, '_enroll_channels', return_value=[task]):
             instance._run()
 
         instance.waitForAbort.assert_called_once_with(_CHECK_INTERVAL)
+
+    def test_run_exits_when_all_task_intervals_are_none(self) -> None:
+        """_run() exits without looping when every enrolled task has interval=None."""
+        from resources.lib.service import RetroService, _ChannelTask
+
+        instance = RetroService()
+        instance.waitForAbort = MagicMock(return_value=True)
+        task = _ChannelTask("Ch", MagicMock(), 0.0, None)
+
+        with patch('resources.lib.helpers.iptvsimplehelper.IptvSimpleHelper.setup_iptvsimple'), \
+                patch.object(instance, '_enroll_channels', return_value=[task]):
+            instance._run()
+
+        instance.waitForAbort.assert_not_called()
 
     def test_tick_calls_service_update_when_interval_elapsed(self) -> None:
         """_tick() calls service_update() for channels whose interval has passed."""
@@ -131,11 +163,13 @@ class TestRetroService(unittest.TestCase):
         slow_cb.assert_not_called()
 
     def _make_channel_info(self, name: str, guid: str,
-                           service_interval: Any = None) -> Tuple[MagicMock, MagicMock]:
+                           service_interval: Any = None,
+                           has_iptv: bool = False) -> Tuple[MagicMock, MagicMock]:
         """Build a minimal ChannelInfo-like mock."""
         ci = MagicMock()
         ci.channelName = name
         ci.guid = guid
+        ci.has_iptv = has_iptv
         channel = MagicMock()
         channel.service_interval = service_interval
         ci.get_channel.return_value = channel
@@ -155,6 +189,41 @@ class TestRetroService(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].interval, 60)
         self.assertEqual(tasks[0].channel_name, "TestCh")
+
+    def test_enroll_registers_iptv_only_channel(self) -> None:
+        """_enroll_channels() registers an iptv task for a channel with has_iptv=True."""
+        from resources.lib.service import RetroService, IPTV_INTERVAL_DEFAULT
+
+        ci, ch = self._make_channel_info("IptvCh", "guid-iptv",
+                                         service_interval=None, has_iptv=True)
+        ch.iptv_refresh_interval = IPTV_INTERVAL_DEFAULT
+
+        with patch('resources.lib.service.ChannelIndex') as mock_ci, \
+                patch('resources.lib.service.RetroService._iptv_active', return_value=True):
+            mock_ci.get_register.return_value.get_channels.return_value = [ci]
+            instance = RetroService()
+            tasks = instance._enroll_channels()
+
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].interval, IPTV_INTERVAL_DEFAULT)
+        self.assertEqual(tasks[0].channel_name, "IptvCh")
+
+    def test_enroll_iptv_channel_uses_default_when_interval_is_none(self) -> None:
+        """_enroll_channels() falls back to IPTV_INTERVAL_DEFAULT when iptv_refresh_interval is None."""
+        from resources.lib.service import RetroService, IPTV_INTERVAL_DEFAULT
+
+        ci, ch = self._make_channel_info("IptvCh", "guid-iptv",
+                                         service_interval=None, has_iptv=True)
+        ch.iptv_refresh_interval = None
+
+        with patch('resources.lib.service.ChannelIndex') as mock_ci, \
+                patch('resources.lib.service.RetroService._iptv_active', return_value=True):
+            mock_ci.get_register.return_value.get_channels.return_value = [ci]
+            instance = RetroService()
+            tasks = instance._enroll_channels()
+
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].interval, IPTV_INTERVAL_DEFAULT)
 
     def test_enroll_clamps_interval_above_max(self) -> None:
         """_enroll_channels() clamps intervals exceeding MAX_SERVICE_INTERVAL."""
@@ -258,6 +327,152 @@ class TestRetroService(unittest.TestCase):
             instance._tick([task])
 
 
+    # -- _write_channel_iptv_files ------------------------------------------
+
+    def test_write_channel_iptv_files_writes_streams_and_epg(self) -> None:
+        """_write_channel_iptv_files() calls write_playlist and write_epg when both are provided."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        channel_entry = MagicMock()
+        channel_entry.id = "test.ch"
+        channel = MagicMock()
+        streams = [{"id": "ch1", "name": "N", "logo": "", "group": "G", "stream": "plugin://..."}]
+        channel.create_iptv_streams.return_value = streams
+        channel.create_iptv_epg.return_value = {"ch1": []}
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('resources.lib.service.Config.profileDir', tmp), \
+                patch('resources.lib.service.ActionParser'), \
+                patch('resources.lib.service.IptvSimpleHelper.write_playlist') as mock_m3u, \
+                patch('resources.lib.service.IptvSimpleHelper.write_epg') as mock_epg:
+            instance._write_channel_iptv_files(channel_entry, channel)
+
+        mock_m3u.assert_called_once_with(streams, "test.ch")
+        mock_epg.assert_called_once()
+
+
+    def test_write_channel_iptv_files_skips_playlist_when_no_streams(self) -> None:
+        """_write_channel_iptv_files() skips write_playlist when create_iptv_streams returns empty."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        channel_entry = MagicMock()
+        channel = MagicMock()
+        channel.create_iptv_streams.return_value = []
+        channel.create_iptv_epg.return_value = None
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('resources.lib.service.Config.profileDir', tmp), \
+                patch('resources.lib.service.ActionParser'), \
+                patch('resources.lib.service.IptvSimpleHelper.write_playlist') as mock_m3u, \
+                patch('resources.lib.service.IptvSimpleHelper.write_epg') as mock_epg:
+            instance._write_channel_iptv_files(channel_entry, channel)
+
+        mock_m3u.assert_not_called()
+        mock_epg.assert_not_called()
+
+
+    def test_write_channel_iptv_files_skips_epg_when_none(self) -> None:
+        """_write_channel_iptv_files() writes playlist but skips epg when create_iptv_epg returns None."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        channel_entry = MagicMock()
+        channel_entry.id = "test.ch"
+        channel = MagicMock()
+        streams = [{"id": "ch1", "name": "N", "logo": "", "group": "G", "stream": "plugin://..."}]
+        channel.create_iptv_streams.return_value = streams
+        channel.create_iptv_epg.return_value = None
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('resources.lib.service.Config.profileDir', tmp), \
+                patch('resources.lib.service.ActionParser'), \
+                patch('resources.lib.service.IptvSimpleHelper.write_playlist') as mock_m3u, \
+                patch('resources.lib.service.IptvSimpleHelper.write_epg') as mock_epg:
+            instance._write_channel_iptv_files(channel_entry, channel)
+
+        mock_m3u.assert_called_once_with(streams, "test.ch")
+        mock_epg.assert_not_called()
+
+
+    def test_write_channel_iptv_files_returns_early_on_makedirs_failure(self) -> None:
+        """_write_channel_iptv_files() returns without writing when makedirs fails."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        channel_entry = MagicMock()
+        channel = MagicMock()
+
+        with patch('resources.lib.service.Config.profileDir', '/nonexistent_base_xyz'), \
+                patch('resources.lib.service.os.path.isdir', return_value=False), \
+                patch('resources.lib.service.os.makedirs', side_effect=OSError("no space")), \
+                patch('resources.lib.service.IptvSimpleHelper.write_playlist') as mock_m3u:
+            instance._write_channel_iptv_files(channel_entry, channel)
+
+        mock_m3u.assert_not_called()
+
+
+    # -- onNotification -----------------------------------------------------
+
+    def test_notification_wrong_method_is_ignored(self) -> None:
+        """onNotification() does nothing for non-OnAddonEnabled events."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        with patch('resources.lib.service.IptvSimpleHelper.setup_iptvsimple') as mock_setup:
+            instance.onNotification("sender", "System.OnAddonDisabled", '{"id":"pvr.iptvsimple"}')
+
+        mock_setup.assert_not_called()
+
+
+    def test_notification_empty_data_is_ignored(self) -> None:
+        """onNotification() does nothing when data is empty."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        with patch('resources.lib.service.IptvSimpleHelper.setup_iptvsimple') as mock_setup:
+            instance.onNotification("sender", "System.OnAddonEnabled", "")
+
+        mock_setup.assert_not_called()
+
+
+    def test_notification_pvr_iptvsimple_triggers_setup(self) -> None:
+        """onNotification() calls setup_iptvsimple() when pvr.iptvsimple is enabled."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        with patch('resources.lib.service.IptvSimpleHelper.setup_iptvsimple') as mock_setup, \
+                patch('resources.lib.service.RetroService._iptv_active', return_value=True):
+            instance.onNotification("sender", "System.OnAddonEnabled", '{"id":"pvr.iptvsimple"}')
+
+        mock_setup.assert_called_once_with()
+
+
+    def test_notification_iptv_manager_triggers_setup(self) -> None:
+        """onNotification() calls setup_iptvsimple() when service.iptv.manager is enabled."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        with patch('resources.lib.service.IptvSimpleHelper.setup_iptvsimple') as mock_setup, \
+                patch('resources.lib.service.RetroService._iptv_active', return_value=True):
+            instance.onNotification("sender", "System.OnAddonEnabled",
+                                    '{"id":"service.iptv.manager"}')
+
+        mock_setup.assert_called_once_with()
+
+
+    def test_notification_unrelated_addon_is_ignored(self) -> None:
+        """onNotification() does nothing when an unrelated addon is enabled."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        with patch('resources.lib.service.IptvSimpleHelper.setup_iptvsimple') as mock_setup:
+            instance.onNotification("sender", "System.OnAddonEnabled", '{"id":"other.addon"}')
+
+        mock_setup.assert_not_called()
+
+
 class TestChnClassServiceInterface(unittest.TestCase):
     """Service callback interface on the Channel base class."""
 
@@ -309,3 +524,59 @@ class TestChnClassServiceInterface(unittest.TestCase):
 
         instance = object.__new__(Channel)
         instance.service_update()  # must not raise
+
+    def test_run_skips_setup_iptvsimple_when_iptv_active_false(self) -> None:
+        """SUCCESS → setup_iptvsimple() not called when _iptv_active returns False."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        instance.waitForAbort = MagicMock(return_value=True)
+
+        with patch('resources.lib.service.RetroService._iptv_active', return_value=False), \
+                patch('resources.lib.service.IptvSimpleHelper') as mock_helper, \
+                patch.object(instance, '_enroll_channels', return_value=[]):
+            instance._run()
+
+        mock_helper.return_value.setup_iptvsimple.assert_not_called()
+
+    def test_enroll_skips_iptv_task_when_iptv_active_false(self) -> None:
+        """SUCCESS → IPTV task not enrolled when _iptv_active returns False."""
+        from resources.lib.service import RetroService
+
+        ci = MagicMock()
+        ci.channelName = "IptvCh"
+        ci.has_iptv = True
+        ch = MagicMock()
+        ch.service_interval = None
+        ci.get_channel.return_value = ch
+
+        with patch('resources.lib.service.RetroService._iptv_active', return_value=False), \
+                patch('resources.lib.service.ChannelIndex') as mock_ci:
+            mock_ci.get_register.return_value.get_channels.return_value = [ci]
+            tasks = RetroService()._enroll_channels()
+
+        self.assertEqual(len(tasks), 0)
+
+    def test_notification_pvr_iptvsimple_skips_setup_when_iptv_active_false(self) -> None:
+        """SUCCESS → setup_iptvsimple() not called for pvr.iptvsimple when _iptv_active is False."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        with patch('resources.lib.service.RetroService._iptv_active', return_value=False), \
+                patch('resources.lib.service.IptvSimpleHelper') as mock_helper:
+            instance.onNotification("sender", "System.OnAddonEnabled",
+                                    '{"id":"pvr.iptvsimple"}')
+
+        mock_helper.return_value.setup_iptvsimple.assert_not_called()
+
+    def test_notification_iptv_manager_skips_setup_when_iptv_active_false(self) -> None:
+        """SUCCESS → setup_iptvsimple() not called for service.iptv.manager when _iptv_active is False."""
+        from resources.lib.service import RetroService
+
+        instance = RetroService()
+        with patch('resources.lib.service.RetroService._iptv_active', return_value=False), \
+                patch('resources.lib.service.IptvSimpleHelper') as mock_helper:
+            instance.onNotification("sender", "System.OnAddonEnabled",
+                                    '{"id":"service.iptv.manager"}')
+
+        mock_helper.return_value.setup_iptvsimple.assert_not_called()

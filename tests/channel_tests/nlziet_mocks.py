@@ -9,6 +9,7 @@ MOCK_APPCONFIG_RESPONSE: Dict[str, Any] = {
     "isUpdateRequired": False,
     "updateText": "",
     "heartbeatInterval": 90,
+    "epgCacheTime": 300,
 }
 
 MOCK_EPG_LIVE_RESPONSE: Dict[str, Any] = {

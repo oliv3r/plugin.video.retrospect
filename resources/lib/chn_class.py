@@ -56,6 +56,9 @@ class Channel:
     are clamped at enrolment time.
     """
 
+    iptv_refresh_interval = None  # type: Optional[int]
+    """Override the IPTV file refresh cadence in seconds; ``None`` uses the service default."""
+
     def __init__(self, channel_info):
         """ Initialisation of the class.
 
