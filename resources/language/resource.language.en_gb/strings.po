@@ -1403,3 +1403,23 @@ msgstr ""
 msgctxt "#30636"
 msgid "Switch profile"
 msgstr ""
+
+msgctxt "#30637"
+msgid "Stream limit of {0} reached."
+msgstr ""
+
+msgctxt "#30638"
+msgid "A subscription is required for this content."
+msgstr ""
+
+msgctxt "#30639"
+msgid "Not authorised to play this stream."
+msgstr ""
+
+msgctxt "#30640"
+msgid "This channel is not available."
+msgstr ""
+
+msgctxt "#30641"
+msgid "This content cannot be played."
+msgstr ""

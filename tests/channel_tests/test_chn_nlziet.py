@@ -19,7 +19,7 @@ if not hasattr(_xbmcgui, "WindowXMLDialog"):
 from resources.lib.urihandler import UriHandler, UriStatus
 from resources.lib.authentication.nlziethandler import DEVICE_FLOW_USER_AGENT
 from .channeltest import ChannelTest
-from tests.channel_tests.nlziet_mocks import MOCK_APPCONFIG_RESPONSE
+from tests.channel_tests.nlziet_mocks import MOCK_APPCONFIG_RESPONSE, MOCK_EPG_LIVE_RESPONSE
 
 
 class TestNlzietChannel(ChannelTest):
@@ -74,13 +74,14 @@ class TestNlzietChannel(ChannelTest):
         self.assertEqual(items, [])
 
 
-    def test_initial_folder_items_returns_empty_when_logged_on(self) -> None:
-        """SUCCESS → returns empty list when the user is logged in (skeleton stub)."""
+    def test_initial_folder_items_returns_live_tv_folder_when_logged_on(self) -> None:
+        """SUCCESS → returns one isLive FolderItem for Live TV."""
 
         with patch.object(type(self.channel), "loggedOn",
                           new_callable=PropertyMock, return_value=True):
             _, items = self.channel.get_initial_folder_items("")
-        self.assertEqual(items, [])
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0].isLive)
 
 
     def test_service_interval_default(self) -> None:
@@ -650,18 +651,19 @@ class TestNlzietChannelUnit(ChannelTest):
 
 
     def test_appconfig_unauthenticated(self) -> None:
-        """Real appconfig fetch with web-client headers returns parseable JSON with expected keys.
+        """Plain-HTTP canary: appconfig endpoint reachable without custom headers.
 
-        Tests the web login path (device_flow=False, Nlziet-AppName=WebApp).
-        Acts as a CI canary: fails hard if isAppBlocked, emits DeprecationWarning
-        if isUpdateRequired so the pipeline surfaces it without breaking the build.
-        Only NLZIET_WEB_VERSION in chn_nlziet.py is relevant here.
+        Sends no Nlziet-* or auth headers so the canary is not sensitive to
+        version string changes.  Acts as a CI canary: fails hard if isAppBlocked,
+        emits DeprecationWarning if isUpdateRequired.
         """
 
         import chn_nlziet
         import warnings
 
-        self.channel._sync_appconfig()
+        with patch.object(type(self.channel), "_request_headers",
+                          new_callable=PropertyMock, return_value={}):
+            self.channel._sync_appconfig()
         self.assertFalse(
             UriHandler.instance().status.error,
             f"Live appconfig HTTP call failed: {UriHandler.instance().status.reason}")
@@ -737,9 +739,6 @@ class TestNlzietChannelUnit(ChannelTest):
         self.assertFalse(chn_nlziet.Channel.is_update_required)
 
     # -- log_on ------------------------------------------------------------
-
-
-
 
 
     def test_log_on_blocked_returns_false(self) -> None:
@@ -1166,13 +1165,40 @@ class TestNlzietChannelUnit(ChannelTest):
         mock_log_off.assert_called_once()
 
 
+    # -- JSON non-dict guards ---------------------------------------------
+
+    def test_get_item_detail_non_dict_json_returns_empty(self):
+        """_get_item_detail() returns {} when API returns valid but non-dict JSON."""
+
+        with patch.object(type(self.channel), "loggedOn",
+                          new_callable=PropertyMock, return_value=True), \
+             patch("resources.lib.urihandler.UriHandler.open", return_value="null"):
+            UriHandler.instance().status = UriStatus(
+                code=200, url=None, error=False, reason="OK")
+            result = self.channel._get_item_detail("some-id")
+        self.assertEqual(result, {})
+        self.assertNotIn("some-id", type(self.channel)._item_detail_cache)
 
 
+    def test_get_item_detail_returns_cached_value_without_fetching(self):
+        """_get_item_detail() returns the cached value directly, skipping the API call."""
+
+        cache = type(self.channel)._item_detail_cache
+        cache["cached-id"] = {"title": "Cached"}
+        try:
+            with patch("resources.lib.urihandler.UriHandler.open") as mock_open:
+                result = self.channel._get_item_detail("cached-id")
+            mock_open.assert_not_called()
+            self.assertEqual(result, {"title": "Cached"})
+        finally:
+            del cache["cached-id"]
 
 
+    def test_prefetch_live_details_non_dict_json_returns_input(self):
+        """_prefetch_live_details() returns (data, []) when API returns non-dict JSON."""
 
-
-
+        result = self.channel._prefetch_live_details("null")
+        self.assertEqual(result, ("null", []))
 
 
 class TestNlzietLoggedOnProperty(ChannelTest):
@@ -1183,7 +1209,11 @@ class TestNlzietLoggedOnProperty(ChannelTest):
 
 
     def setUp(self) -> None:
-        super().setUp()
+        UriHandler.instance().status = UriStatus(code=0, url=None, error=False, reason=None)
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value='{"heartbeatInterval": 90, "isAppBlocked": false}'), \
+                patch("resources.lib.xbmcwrapper.XbmcWrapper.show_yes_no"):
+            super().setUp()
 
 
     def test_logged_on_false_when_no_token(self) -> None:
@@ -1242,7 +1272,7 @@ class TestNlzietChannelLive(ChannelTest):
         auth = Authenticator(handler)
         result = auth.log_on(username=cls.username, password=cls.password)
         if not result.logged_on:
-            raise unittest.SkipTest("NLZIET live login failed in setUpClass.")
+            raise RuntimeError("NLZIET live login failed in setUpClass — check credentials and network.")
 
 
     def setUp(self) -> None:
@@ -1264,7 +1294,7 @@ class TestNlzietChannelLive(ChannelTest):
 
         with unittest.mock.patch("xbmcgui.Dialog.select", return_value=0):
             if not self.channel.log_on():
-                self.skipTest("NLZIET login failed.")
+                self.fail("NLZIET login failed — check credentials and network.")
 
 
     def test_login_succeeds(self) -> None:
@@ -1290,3 +1320,146 @@ class TestNlzietChannelLive(ChannelTest):
         """Live: a second log_on() call hits the fast path and returns True immediately."""
 
         self.assertTrue(self.channel.log_on())
+
+
+    def test_process_folder_list_returns_live_channels(self) -> None:
+        """Live: process_folder_list returns at least one live channel item from the real EPG API."""
+
+        items = self.channel.process_folder_list(None)
+        self.assertGreater(len(items), 0)
+
+
+    def test_update_live_item_returns_stream_url(self) -> None:
+        """Live: update_live_item completes a live channel item with a valid stream URL."""
+
+        main_items = self.channel.process_folder_list(None)
+        self.assertGreater(len(main_items), 0, "No items in main channel list")
+        live_channels = self.channel.process_folder_list(main_items[0])
+        self.assertGreater(len(live_channels), 0, "No live channels returned to test stream update on")
+        with patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(live_channels[0])
+        self.assertTrue(updated.complete)
+
+
+    def test_update_live_item_invalid_channel_id_returns_incomplete(self) -> None:
+        """Live: update_live_item with a bad channel ID returns an incomplete item."""
+
+        from resources.lib.mediaitem import MediaItem
+        item = MediaItem(
+            "Invalid Channel",
+            "https://api.nlziet.nl/v9/epg/programlocations/live?channel=invalid-xyz-9999",
+        )
+        result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
+
+
+# =============================================================================
+# Mocked channel tests (run without live credentials)
+# =============================================================================
+
+
+class TestNlzietChannelMocked(TestNlzietChannelLive):
+    """Mocked counterpart to TestNlzietChannelLive — runs without credentials."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Skip the live-credential check; inject mock tokens directly.
+        super(TestNlzietChannelLive, cls).setUpClass()
+
+        from resources.lib.addonsettings import AddonSettings, LOCAL
+        from resources.lib.authentication.nlziethandler import (
+            WEB_CLIENT_ID, AUTH_CLIENT_ID_KEY)
+        from tests.authentication.nlziethandler_mocks import (
+            MOCK_ACCESS_TOKEN, MOCK_REFRESH_TOKEN, MOCK_ID_TOKEN, MOCK_PROFILE_ID)
+
+        prefix = "nlziet_oauth2_{}_".format(WEB_CLIENT_ID)
+        AddonSettings.set_setting("{}access_token".format(prefix), MOCK_ACCESS_TOKEN, store=LOCAL)
+        AddonSettings.set_setting("{}refresh_token".format(prefix), MOCK_REFRESH_TOKEN, store=LOCAL)
+        AddonSettings.set_setting("{}id_token".format(prefix), MOCK_ID_TOKEN, store=LOCAL)
+        AddonSettings.set_setting("{}expires_at".format(prefix), str(9999999999), store=LOCAL)
+        AddonSettings.set_setting(AUTH_CLIENT_ID_KEY, WEB_CLIENT_ID, store=LOCAL)
+        AddonSettings.set_setting("nlziet_profile_id", MOCK_PROFILE_ID, store=LOCAL)
+
+
+    def setUp(self) -> None:
+        # Bypass the live-credentials gate in TestNlzietChannelLive.setUp.
+        UriHandler.instance().status = UriStatus(code=0, url=None, error=False, reason=None)
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value='{"heartbeatInterval": 90, "isAppBlocked": false}'), \
+                patch("resources.lib.xbmcwrapper.XbmcWrapper.show_yes_no"):
+            super(TestNlzietChannelLive, self).setUp()
+        UriHandler.instance().status = UriStatus(code=0, url=None, error=False, reason=None)
+
+        from resources.lib.addonsettings import AddonSettings, LOCAL
+        from tests.authentication.nlziethandler_mocks import MOCK_ACCESS_TOKEN, MOCK_EMAIL
+
+        AddonSettings.set_channel_setting(self.channel.guid, "nlziet_username", MOCK_EMAIL,
+                                          store=LOCAL)
+
+        select_profile_patcher = unittest.mock.patch(
+            "chn_nlziet.Channel._select_profile",
+            return_value=True)
+        verify_token_patcher = unittest.mock.patch(
+            "resources.lib.authentication.nlziethandler.NLZIETHandler.verify_token",
+            return_value="valid")
+        # Prevent any real network call: return the mock token directly so
+        # refresh_access_token() never falls through to _refresh_token_grant().
+        refresh_token_patcher = unittest.mock.patch(
+            "resources.lib.authentication.nlziethandler.NLZIETHandler.refresh_access_token",
+            return_value=MOCK_ACCESS_TOKEN)
+
+        select_profile_patcher.start()
+        verify_token_patcher.start()
+        refresh_token_patcher.start()
+        self.addCleanup(select_profile_patcher.stop)
+        self.addCleanup(verify_token_patcher.stop)
+        self.addCleanup(refresh_token_patcher.stop)
+
+        with unittest.mock.patch("xbmcgui.Dialog.select", return_value=0):
+            if not self.channel.log_on():
+                self.fail("Mocked NLZIET login failed — check mock token setup.")
+
+    def test_process_folder_list_returns_live_channels(self) -> None:
+        """Mocked: process_folder_list returns channel items from a mock EPG response."""
+
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=json.dumps(MOCK_EPG_LIVE_RESPONSE)), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch("resources.lib.addonsettings.AddonSettings.set_setting"):
+            items = self.channel.process_folder_list(None)
+        self.assertGreater(len(items), 0)
+
+    def test_update_live_item_returns_stream_url(self) -> None:
+        """Mocked: update_live_item completes with a mock handshake response."""
+
+        from resources.lib.mediaitem import MediaItem
+        item = MediaItem(
+            "Test Channel",
+            "https://api.nlziet.nl/v9/epg/programlocations/live?channel=test-live-1",
+        )
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://license.example.com/", "headers": {}},
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=handshake_response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+                patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+
+    def test_update_live_item_invalid_channel_id_returns_incomplete(self) -> None:
+        """Mocked: update_live_item with an API error response returns an incomplete item."""
+
+        from resources.lib.mediaitem import MediaItem
+        item = MediaItem(
+            "Invalid Channel",
+            "https://api.nlziet.nl/v9/epg/programlocations/live?channel=invalid-xyz-9999",
+        )
+        error_response = json.dumps({
+            "errors": [{"type": "ChannelNotFound", "message": "Channel not found"}],
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=error_response), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""):
+            result = self.channel.update_live_item(item)
+        self.assertFalse(result.complete)
