@@ -179,6 +179,17 @@ class LanguageHelper(object):
     RevocationError = 30623
     ServiceUnavailable = 30624
     ServiceUnavailableExhausted = 30625
+    UnknownError = 30626
+    SelectProfile = 30627
+    UnknownUser = 30628
+    WelcomeUser = 30629
+    LoginFirst = 30630
+    AccountBlocked = 30631
+    LoggedOutSuccessfully = 30632
+    NoProfilesAvailable = 30633
+    LogIn = 30634
+    LogOut = 30635
+    SwitchProfile = 30636
 
     Today = 30551
     Yesterday = 30552

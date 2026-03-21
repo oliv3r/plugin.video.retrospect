@@ -1359,3 +1359,47 @@ msgstr ""
 msgctxt "#30625"
 msgid "Failed to connect to service. Please try again later."
 msgstr ""
+
+msgctxt "#30626"
+msgid "An unknown error occurred. Please check the log for details."
+msgstr ""
+
+msgctxt "#30627"
+msgid "Select profile"
+msgstr ""
+
+msgctxt "#30628"
+msgid "Unknown User"
+msgstr ""
+
+msgctxt "#30629"
+msgid "Welcome, {0}!"
+msgstr ""
+
+msgctxt "#30630"
+msgid "Please log in first."
+msgstr ""
+
+msgctxt "#30631"
+msgid "Account blocked."
+msgstr ""
+
+msgctxt "#30632"
+msgid "Logged out successfully."
+msgstr ""
+
+msgctxt "#30633"
+msgid "No profiles available. Please check your account."
+msgstr ""
+
+msgctxt "#30634"
+msgid "Log in"
+msgstr ""
+
+msgctxt "#30635"
+msgid "Log out"
+msgstr ""
+
+msgctxt "#30636"
+msgid "Switch profile"
+msgstr ""
