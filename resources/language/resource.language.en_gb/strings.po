@@ -1351,3 +1351,11 @@ msgstr ""
 msgctxt "#30623"
 msgid "Device revocation failed. The device may still be registered on the server."
 msgstr ""
+
+msgctxt "#30624"
+msgid "Unable to connect to service, retry?"
+msgstr ""
+
+msgctxt "#30625"
+msgid "Failed to connect to service. Please try again later."
+msgstr ""

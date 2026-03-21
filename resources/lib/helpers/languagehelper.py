@@ -177,6 +177,8 @@ class LanguageHelper(object):
     DeviceCodeExpired = 30621
     DeviceSetupFailed = 30622
     RevocationError = 30623
+    ServiceUnavailable = 30624
+    ServiceUnavailableExhausted = 30625
 
     Today = 30551
     Yesterday = 30552
