@@ -174,6 +174,17 @@ class LanguageHelper(object):
     DeviceCodeExpired = 30621
     DeviceSetupFailed = 30622
     RevocationError = 30623
+    UnknownError = 30624
+    SelectProfile = 30625
+    UnknownUser = 30626
+    WelcomeUser = 30627
+    LoginFirst = 30628
+    AccountBlocked = 30629
+    LoggedOutSuccessfully = 30630
+    NoProfilesAvailable = 30631
+    LogIn = 30632
+    LogOut = 30633
+    SwitchProfile = 30634
 
     Today = 30551
     Yesterday = 30552
