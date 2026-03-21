@@ -2107,7 +2107,7 @@ class TestNlzietValidateToken(unittest.TestCase):
 
 
 class TestNlzietDoTokenRefresh(unittest.TestCase):
-    """Tests for NLZIETHandler._refresh_token_grant() — no-refresh-token fallback."""
+    """Tests for NLZIETHandler._refresh_token_grant() — refresh and silent re-auth fallback."""
 
     def setUp(self) -> None:
         self.handler = _make_nlziet_handler()
@@ -2126,12 +2126,31 @@ class TestNlzietDoTokenRefresh(unittest.TestCase):
         self.assertEqual(calls, [True])
 
     @unittest.mock.patch("resources.lib.addonsettings.AddonSettings.set_setting")
-    def test_clears_tokens_and_returns_false_on_grant_failure(
+    def test_falls_back_to_silent_reauth_when_refresh_grant_fails(
             self, _mock_set: unittest.mock.MagicMock) -> None:
-        """_refresh_token_grant() clears tokens and returns False when refresh grant fails."""
+        """_refresh_token_grant() clears tokens and falls back to silent re-auth when grant fails."""
 
-        self.handler._refresh_token = "refresh"
+        self.handler._refresh_token = "stale-refresh-token"
         self.handler._access_token = "acc"
+        calls: list = []
+        self.handler._silent_authentication = lambda: calls.append(True) or True  # type: ignore[method-assign, func-returns-value]
+
+        with unittest.mock.patch.object(
+                self.handler, "_request_token", return_value=False):
+            result = self.handler._refresh_token_grant()
+
+        self.assertTrue(result)
+        self.assertEqual(calls, [True])
+        self.assertEqual(self.handler._access_token, "")
+
+    @unittest.mock.patch("resources.lib.addonsettings.AddonSettings.set_setting")
+    def test_clears_tokens_and_returns_false_when_both_grant_and_silent_fail(
+            self, _mock_set: unittest.mock.MagicMock) -> None:
+        """_refresh_token_grant() returns False when both refresh grant and silent re-auth fail."""
+
+        self.handler._refresh_token = "stale-refresh-token"
+        self.handler._access_token = "acc"
+        self.handler._silent_authentication = lambda: False  # type: ignore[method-assign]
 
         with unittest.mock.patch.object(
                 self.handler, "_request_token", return_value=False):

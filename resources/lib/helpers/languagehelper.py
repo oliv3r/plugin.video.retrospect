@@ -54,6 +54,8 @@ class LanguageHelper(object):
     ChannelAdaptiveMode = 30581
     LoginErrorTitle = 30012
     LoginErrorText = 30013
+    Username = 30035
+    Password = 30036
 
     NowPlaying = 30346
     Now = 30347
@@ -160,6 +162,28 @@ class LanguageHelper(object):
 
     DeviceSetupQrInstruction = 30610
     QrAddonMissing = 30611
+    ConnectionError = 30612
+    SessionExpired = 30613
+    LoginFailed = 30614
+    UnknownError = 30615
+    DeviceSetupTitle = 30616
+    DeviceSetupVisit = 30617
+    DeviceSetupEnterCode = 30618
+    ManualLogin = 30619
+    DeviceSetupFailed = 30620
+    SelectProfile = 30621
+    UnknownUser = 30622
+    WelcomeUser = 30623
+    LoginFirst = 30624
+    AccountBlocked = 30625
+    LoggedOutSuccessfully = 30626
+    MaxStreamsReached = 30627
+    LogOut = 30628
+    SwitchProfile = 30629
+    NoProfilesAvailable = 30630
+    MissingUsername = 30631
+    MissingPassword = 30632
+    DeviceCodeExpired = 30633
 
     Today = 30551
     Yesterday = 30552
