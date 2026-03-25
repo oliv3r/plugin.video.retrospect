@@ -7,8 +7,10 @@ import os
 import json
 import tempfile
 import shutil
+import threading
 import time
 
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import quote
 
 from resources.lib.urihandler import UriHandler
@@ -211,6 +213,36 @@ class TestUriHandler(unittest.TestCase):
         data = json.loads(data)
         self.assertEqual([header_value], data["headers"][header_name])
         self.assertEqual(200, UriHandler.instance().status.code)
+
+    def test_user_agent_can_be_suppressed(self) -> None:
+        class HeaderEchoHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                headers = {k: [v] for k, v in self.headers.items()}
+                payload = json.dumps({"headers": headers}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, _format, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), HeaderEchoHandler)
+        thread = threading.Thread(target=server.handle_request)
+        thread.start()
+        try:
+            UriHandler.create_uri_handler()
+
+            url = f"http://127.0.0.1:{server.server_address[1]}/headers"
+            data = UriHandler.open(url, additional_headers={"User-Agent": None})
+            self.assertIsNot("", data)
+            data = json.loads(data)
+            self.assertNotIn("User-Agent", data["headers"])
+            self.assertEqual(200, UriHandler.instance().status.code)
+        finally:
+            thread.join()
+            server.server_close()
 
     def test_referer(self):
         UriHandler.create_uri_handler()

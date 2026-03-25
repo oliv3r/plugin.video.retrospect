@@ -11,6 +11,7 @@ from collections import namedtuple
 import requests
 import requests.cookies
 import requests.utils
+from urllib3.util import SKIP_HEADER
 
 from resources.lib.connectivity.cachehttpadapter import CacheHTTPAdapter
 from resources.lib.connectivity.streamcache import StreamCache
@@ -95,7 +96,8 @@ class UriHandler(object):
         :param ProxyInfo proxy:             The address and port (proxy.address.ext:port) of a
                                             proxy server that should be used.
         :param str referer:                 The http referer to use.
-        :param dict additional_headers:     The optional headers.
+        :param dict additional_headers:     The optional headers. Set ``User-Agent`` to ``None``
+                                            to suppress the default User-Agent.
         :param function progress_callback:  The callback for progress update. The format is
                                             function(retrievedSize, totalSize, perc, completed, status)
 
@@ -120,7 +122,8 @@ class UriHandler(object):
         :param ProxyInfo proxy:                 The address and port (proxy.address.ext:port) of a
                                                 proxy server that should be used.
         :param str referer:                     The http referer to use.
-        :param dict additional_headers:         The optional headers.
+        :param dict additional_headers:         The optional headers. Set ``User-Agent`` to ``None``
+                                                to suppress the default User-Agent.
         :param bool no_cache:                   Should cache be disabled.
         :param bool force_text:                 In case no content type is specified, force text.
         :param int|None force_cache_duration:   Should a forced cache duration be used?
@@ -143,15 +146,15 @@ class UriHandler(object):
         :param ProxyInfo proxy:             The address and port (proxy.address.ext:port) of a
                                             proxy server that should be used.
         :param str referer:                 The http referer to use.
-        :param dict additional_headers:     The optional headers.
+        :param dict additional_headers:     The optional headers. Set ``User-Agent`` to ``None``
+                                            to suppress the default User-Agent.
 
         :return: Content-type and the URL to which a redirect could have occurred.
         :rtype: tuple[str,str]
 
         """
 
-        return UriHandler.instance().header(uri, proxy, referer,
-                                            additional_headers)
+        return UriHandler.instance().header(uri, proxy, referer, additional_headers)
 
     @staticmethod
     def set_cookie(version=0, name='', value='',
@@ -370,7 +373,8 @@ class _RequestsHandler(object):
         :param ProxyInfo proxy:             The address and port (proxy.address.ext:port) of a
                                             proxy server that should be used.
         :param str referer:                 The http referer to use.
-        :param dict additional_headers:     The optional headers.
+        :param dict additional_headers:     The optional headers. Set ``User-Agent`` to ``None``
+                                            to suppress the default User-Agent.
         :param function progress_callback:  The callback for progress update. The format is
                                             function(retrievedSize, totalSize, perc, completed, status)
 
@@ -436,7 +440,8 @@ class _RequestsHandler(object):
         :param ProxyInfo proxy:                 The address and port (proxy.address.ext:port) of a
                                                 proxy server that should be used.
         :param str referer:                     The http referer to use.
-        :param dict|None additional_headers:    The optional headers.
+        :param dict|None additional_headers:    The optional headers. Set ``User-Agent`` to ``None``
+                                                to suppress the default User-Agent.
         :param bool no_cache:                   Should cache be disabled.
         :param bool|None force_text:            In case no content type is specified, force text.
         :param int|None force_cache_duration:   Should a forced cache duration be used?
@@ -486,7 +491,8 @@ class _RequestsHandler(object):
         :param ProxyInfo|none proxy:            The address and port (proxy.address.ext:port) of a
                                                 proxy server that should be used.
         :param str|none referer:                The http referer to use.
-        :param dict|none additional_headers:    The optional headers.
+        :param dict|none additional_headers:    The optional headers. Set ``User-Agent`` to ``None``
+                                                to suppress the default User-Agent.
 
         :return: Content-type and the URL to which a redirect could have occurred.
         :rtype: tuple[str,str]
@@ -601,7 +607,11 @@ class _RequestsHandler(object):
         headers = {}
         if additional_headers:
             for k, v in additional_headers.items():
-                headers[k.lower()] = v
+                key = k.lower()
+                if key == "user-agent" and v is None:
+                    headers[key] = SKIP_HEADER
+                elif v is not None:
+                    headers[key] = v
 
         if "user-agent" not in headers:
             headers["user-agent"] = self.userAgent
