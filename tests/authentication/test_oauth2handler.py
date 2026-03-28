@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import resources.lib.authentication.oauth2handler as oauth2handler_module
 from resources.lib.authentication.oauth2handler import (
-    _JwtFallback, OAuth2Handler)
+    _JwtFallback, OAuth2Handler, DEVICE_FLOW_INTERVAL)
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +52,7 @@ class _StubOAuth2Handler(OAuth2Handler):
     authorization_endpoint = "https://auth.example.com/authorize"
     token_endpoint = "https://auth.example.com/token"
     redirect_uri = "https://localhost/callback"
+    device_authorization_endpoint = "https://auth.example.com/device"
 
 
 def _make_handler(**overrides: Any) -> "_StubOAuth2Handler":
@@ -704,6 +705,57 @@ class TestOAuth2HandlerRefresh(unittest.TestCase):
         self.assertEqual(self.handler._get_access_token(), "mytoken")
 
 
+class TestOAuth2HandlerPollDeviceFlowOnce(unittest.TestCase):
+    """Tests for poll_device_authorization() — the non-blocking RFC 8628 tick."""
+
+    def setUp(self) -> None:
+        self.handler = _make_handler()
+
+    def test_returns_pending_when_interval_not_elapsed(self) -> None:
+        """poll_device_authorization() returns 'pending' without polling if interval hasn't elapsed."""
+
+        self.handler._next_poll_at = time.time() + 60
+        result = self.handler.poll_device_authorization("dev_code")
+
+        self.assertEqual(result, "pending")
+
+    def test_returns_success(self) -> None:
+        """poll_device_authorization() returns 'success' when _device_access_token_request succeeds."""
+
+        with unittest.mock.patch.object(self.handler, "_device_access_token_request", return_value="success"):
+            result = self.handler.poll_device_authorization("dev_code")
+
+        self.assertEqual(result, "success")
+
+    def test_maps_authorization_pending_to_pending(self) -> None:
+        """poll_device_authorization() maps 'authorization_pending' to 'pending'."""
+
+        with unittest.mock.patch.object(
+                self.handler, "_device_access_token_request", return_value="authorization_pending"):
+            result = self.handler.poll_device_authorization("dev_code")
+
+        self.assertEqual(result, "pending")
+
+    def test_slow_down_increases_interval_and_returns_pending(self) -> None:
+        """poll_device_authorization() increases interval by DEVICE_FLOW_INTERVAL on slow_down."""
+
+        initial = self.handler._poll_interval
+        with unittest.mock.patch.object(self.handler, "_device_access_token_request", return_value="slow_down"):
+            result = self.handler.poll_device_authorization("dev_code")
+
+        self.assertEqual(result, "pending")
+        self.assertEqual(self.handler._poll_interval, initial + DEVICE_FLOW_INTERVAL)
+
+    def test_maps_unexpected_result_to_error(self) -> None:
+        """poll_device_authorization() maps unknown server responses to 'error'."""
+
+        with unittest.mock.patch.object(
+                self.handler, "_device_access_token_request", return_value="expired_token"):
+            result = self.handler.poll_device_authorization("dev_code")
+
+        self.assertEqual(result, "error")
+
+
 class TestOAuth2HandlerNetwork(unittest.TestCase):
     """Tests for methods that make HTTP calls — UriHandler is mocked."""
 
@@ -720,11 +772,87 @@ class TestOAuth2HandlerNetwork(unittest.TestCase):
         decode_patcher.start()
         self.addCleanup(decode_patcher.stop)
 
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
+    def test_device_access_token_request_success(self, mock_open: unittest.mock.MagicMock) -> None:
+        """_device_access_token_request() returns 'success' and stores tokens on valid response."""
+
+        mock_open.return_value = json.dumps({
+            "access_token": "acc",
+            "refresh_token": "ref",
+            "expires_in": 3600,
+        })
+
+        with unittest.mock.patch.object(self.handler, "_save_tokens") as mock_store:
+            result = self.handler._device_access_token_request("device_code")
+
+        self.assertEqual(result, "success")
+        mock_store.assert_called_once()
+
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
+    def test_device_access_token_request_authorization_pending(self, mock_open: unittest.mock.MagicMock) -> None:
+        """_device_access_token_request() returns the error string from the response."""
+
+        mock_open.return_value = json.dumps({"error": "authorization_pending"})
+
+        result = self.handler._device_access_token_request("device_code")
+
+        self.assertEqual(result, "authorization_pending")
+
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
+    def test_device_access_token_request_network_error(self, mock_open: unittest.mock.MagicMock) -> None:
+        """_device_access_token_request() returns 'error' when UriHandler reports a network failure."""
+
+        from resources.lib.urihandler import UriStatus
+        mock_open.return_value = ""
+        self._mock_instance.return_value.status = UriStatus(code=0, url="", error=True, reason="timeout")
+
+        result = self.handler._device_access_token_request("device_code")
+
+        self.assertEqual(result, "error")
+
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
+    def test_device_access_token_request_unknown_response(self, mock_open: unittest.mock.MagicMock) -> None:
+        """_device_access_token_request() returns 'unknown_response' for a body with neither error nor access_token."""
+
+        mock_open.return_value = json.dumps({"interval": 5})
+
+        result = self.handler._device_access_token_request("device_code")
+
+        self.assertEqual(result, "unknown_response")
+
+    @unittest.mock.patch("resources.lib.addonsettings.AddonSettings.set_setting")
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
+    @unittest.mock.patch("resources.lib.authentication.oauth2handler.time")
+    def test_fetch_tokens_returns_dict_on_success(self, mock_time: unittest.mock.MagicMock, mock_open: unittest.mock.MagicMock, _mock_set: unittest.mock.MagicMock) -> None:
+        """_fetch_tokens() returns the parsed token dict without saving."""
+
+        mock_time.time.return_value = 0
+        mock_open.return_value = json.dumps({"access_token": "tok", "expires_in": 600})
+
+        result = self.handler._fetch_tokens({"grant_type": "authorization_code", "code": "c"})
+
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["access_token"], "tok")
+        self.assertEqual(self.handler._access_token, "", "fetch must not commit state")
+
+    @unittest.mock.patch("resources.lib.addonsettings.AddonSettings.set_setting")
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
+    @unittest.mock.patch("resources.lib.authentication.oauth2handler.time")
+    def test_fetch_tokens_returns_none_on_missing_access_token(self, mock_time: unittest.mock.MagicMock, mock_open: unittest.mock.MagicMock, _mock_set: unittest.mock.MagicMock) -> None:
+        """_fetch_tokens() returns None when access_token is absent from the response."""
+
+        mock_time.time.return_value = 0
+        mock_open.return_value = json.dumps({"error": "invalid_grant"})
+
+        result = self.handler._fetch_tokens({"grant_type": "refresh_token"})
+
+        self.assertIsNone(result)
+
     @unittest.mock.patch("resources.lib.addonsettings.AddonSettings.set_setting")
     @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
     @unittest.mock.patch("resources.lib.authentication.oauth2handler.time")
     def test_request_token_stores_on_success(self, mock_time: unittest.mock.MagicMock, mock_open: unittest.mock.MagicMock, _mock_set: unittest.mock.MagicMock) -> None:
-        """_request_token() stores tokens from a successful response."""
+        """_request_token() delegates to _fetch_tokens and commits via _save_tokens."""
 
         mock_time.time.return_value = 0
         mock_open.return_value = json.dumps({
@@ -782,14 +910,103 @@ class TestOAuth2HandlerNetwork(unittest.TestCase):
 
         self.assertTrue(result)
 
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open", return_value="")
+    def test_exchange_code_returns_false_on_failure(self, _mock_open: unittest.mock.MagicMock) -> None:
+        """_exchange_code() returns False when _request_token returns None."""
+
+        from resources.lib.urihandler import UriStatus
+        error_status = UriStatus(code=503, url="", error=True, reason="Service Unavailable")
+        with unittest.mock.patch("resources.lib.urihandler.UriHandler.instance") as mock_instance:
+            mock_instance.return_value.status = error_status
+            result = self.handler._exchange_code("authcode", "verifier123")
+
+        self.assertFalse(result)
+
     @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
-    def test_exchange_code_raises_on_network_failure(self, mock_open: unittest.mock.MagicMock) -> None:
-        """_exchange_code() propagates network errors to its caller."""
+    def test_do_token_refresh_raises_without_refresh_token(self, _mock_open: unittest.mock.MagicMock) -> None:
+        """_refresh_token_grant() returns False when no refresh token is stored."""
 
-        mock_open.side_effect = IOError("bad gateway")
+        self.handler._refresh_token = ""
 
-        with self.assertRaises(IOError):
-            self.handler._exchange_code("authcode", "verifier123")
+        self.assertFalse(self.handler._refresh_token_grant())
+
+
+class TestOAuth2HandlerStartDeviceFlow(unittest.TestCase):
+    """Tests for _device_authorization_request() — the RFC 8628 device authorisation request."""
+
+    def setUp(self) -> None:
+        from resources.lib.urihandler import UriStatus
+        self.handler = _make_handler()
+        ok_status = UriStatus(code=200, url="", error=False, reason="OK")
+        instance_patcher = unittest.mock.patch("resources.lib.urihandler.UriHandler.instance")
+        self._mock_instance = instance_patcher.start()
+        self._mock_instance.return_value.status = ok_status
+        self.addCleanup(instance_patcher.stop)
+
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
+    def test_start_device_flow_success(self, mock_open: unittest.mock.MagicMock) -> None:
+        """_device_authorization_request() returns a dict with device_code and user_code on success."""
+
+        mock_open.return_value = json.dumps({
+            "device_code": "dev123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://example.com/activate",
+            "expires_in": 900,
+            "interval": 5,
+        })
+
+        result = self.handler._device_authorization_request()
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["device_code"], "dev123")
+        self.assertEqual(result["user_code"], "ABCD-1234")
+
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
+    def test_start_device_flow_passes_additional_headers(self, mock_open: unittest.mock.MagicMock) -> None:
+        """_device_authorization_request() forwards additional_headers to UriHandler."""
+
+        mock_open.return_value = json.dumps({"device_code": "x", "user_code": "y"})
+
+        self.handler._device_authorization_request(additional_headers={"User-Agent": "TestAgent/1.0"})
+
+        _, kwargs = mock_open.call_args
+        self.assertEqual(kwargs.get("additional_headers", {}).get("User-Agent"), "TestAgent/1.0")
+
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
+    def test_start_device_flow_passes_through_user_agent_none_header(
+            self, mock_open: unittest.mock.MagicMock) -> None:
+        """_device_authorization_request() forwards an explicit User-Agent suppression marker to UriHandler."""
+
+        mock_open.return_value = json.dumps({"device_code": "x", "user_code": "y"})
+
+        self.handler._device_authorization_request(additional_headers={"User-Agent": None})
+
+        _, kwargs = mock_open.call_args
+        self.assertIsNone(kwargs.get("additional_headers", {}).get("User-Agent"))
+
+    def test_start_device_flow_raises_without_endpoint(self) -> None:
+        """_device_authorization_request() returns None when no device endpoint is set."""
+
+        self.handler.__class__.device_authorization_endpoint = None  # type: ignore[assignment]
+        try:
+            result = self.handler._device_authorization_request()
+            self.assertIsNone(result)
+        finally:
+            self.handler.__class__.device_authorization_endpoint = "https://auth.example.com/device"
+
+    @unittest.mock.patch("resources.lib.urihandler.UriHandler.open")
+    def test_start_device_flow_returns_none_on_network_error(self, mock_open: unittest.mock.MagicMock) -> None:
+        """_device_authorization_request() returns None (not raises) on network failure."""
+
+        from resources.lib.urihandler import UriStatus
+        mock_open.return_value = ""
+        with unittest.mock.patch("resources.lib.urihandler.UriHandler.instance") as mock_instance:
+            mock_instance.return_value.status = UriStatus(
+                code=0, url="", error=True, reason="connection refused")
+            result = self.handler._device_authorization_request()
+
+        self.assertIsNone(result)
 
 
 class TestOAuth2HandlerDoTokenRefresh(unittest.TestCase):
