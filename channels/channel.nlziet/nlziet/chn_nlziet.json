@@ -53,8 +53,13 @@
     },
     {
       "order": 8,
-      "value": "label=\"30642\" type=\"slider\" option=\"int\" range=\"-60,10,320\" default=\"0\"",
+      "value": "label=\"30643\" type=\"slider\" option=\"int\" range=\"-60,10,320\" default=\"0\"",
       "id": "nlziet_live_start_offset"
+    },
+    {
+      "order": 9,
+      "value": "label=\"30644\" type=\"bool\" default=\"false\"",
+      "id": "nlziet_report_progress"
     }
   ]
 }
