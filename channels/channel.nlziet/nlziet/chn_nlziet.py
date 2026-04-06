@@ -5,8 +5,8 @@ import json
 import threading
 import time
 import xbmc
-from typing import Any, List, Optional, Tuple, final
-from urllib.parse import parse_qs, urlparse
+from typing import Any, List, ClassVar, Optional, Tuple, final
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from resources.lib import chn_class, mediatype
 from resources.lib.actions import action
@@ -85,6 +85,9 @@ class Channel(chn_class.Channel):
 
     update_reason: str = ""
     """Human-readable update reason from the API (``updateText``), or empty string."""
+
+    _now_playing: ClassVar[Optional[dict]] = None
+    """Currently playing item state, set by update_live_item; used by the heartbeat."""
 
 
     def __init__(self, channel_info: ChannelInfo) -> None:
@@ -477,10 +480,43 @@ class Channel(chn_class.Channel):
                     item.streams[-1].add_property(
                         "inputstream.adaptive.manifest_config",
                         json.dumps({"live_offset": total}))
+                Channel._now_playing = {
+                    "type": "epg",
+                    "id": channel_id,
+                    "epg_type": "Restart",
+                }
                 return item
 
         item = self._handle_stream_handshake(item, handshake_url, manifest_update="full")
+        Channel._now_playing = {
+            "type": "epg",
+            "id": channel_id,
+            "epg_type": "Live",
+        }
         return item
+
+
+    def _report_epg_heartbeat(self) -> None:
+        """POST playback progress to the NLZIET heartbeat endpoint if playing."""
+
+        if self._get_setting("nlziet_report_progress") != "true":
+            return
+
+        state = Channel._now_playing
+        if state is None:
+            return
+
+        player = xbmc.Player()
+        if not player.isPlaying():
+            Channel._now_playing = None
+            return
+
+        progress_ms = int(player.getTime() * _MS_PER_SECOND)
+        content_id = state["id"]
+        epg_type = state.get("epg_type", "Live")
+        params = urlencode({"progress": progress_ms, "epgType": epg_type})
+        url = f"{API_CONTENT_URL}/heartbeat/epg/{content_id}?{params}"
+        UriHandler.open(url, additional_headers=self._handler.get_headers(), method="POST")
 
 
     def create_live_channel_item(self, result_set: dict) -> Optional[MediaItem]:
@@ -1115,3 +1151,4 @@ class Channel(chn_class.Channel):
             return
 
         self._handler.refresh_access_token()
+        self._report_epg_heartbeat()

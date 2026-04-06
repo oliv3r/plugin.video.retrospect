@@ -48,6 +48,7 @@ class TestNlzietChannel(ChannelTest):
         chn_nlziet.Channel.blocked_reason = self._orig_blocked_reason
         chn_nlziet.Channel.is_update_required = self._orig_is_update_required
         chn_nlziet.Channel.update_reason = self._orig_update_reason
+        chn_nlziet.Channel._now_playing = None
         super().tearDown()
 
     # -- Channel metadata --------------------------------------------------
@@ -1272,6 +1273,103 @@ class TestNlzietChannel(ChannelTest):
         self.assertIn(chn_nlziet.APPCONFIG_CACHE_KEY, stored)
         data = json.loads(stored[chn_nlziet.APPCONFIG_CACHE_KEY])
         self.assertIn("heartbeatInterval", data)
+
+
+    def test_report_epg_heartbeat_no_state_does_nothing(self) -> None:
+        """_report_epg_heartbeat() is a no-op when there is no now-playing state."""
+
+        import chn_nlziet
+        chn_nlziet.Channel._now_playing = None
+        with patch.object(self.channel, "_get_setting", return_value="true"), \
+                patch("resources.lib.urihandler.UriHandler.open") as mock_open:
+            self.channel._report_epg_heartbeat()
+        mock_open.assert_not_called()
+
+
+    def test_report_epg_heartbeat_disabled_by_setting_does_nothing(self) -> None:
+        """_report_epg_heartbeat() skips when the progress-reporting setting is off."""
+
+        import chn_nlziet
+        chn_nlziet.Channel._now_playing = {"type": "epg", "id": "rtl4", "epg_type": "Live"}
+        with patch.object(self.channel, "_get_setting", return_value="false"), \
+                patch("resources.lib.urihandler.UriHandler.open") as mock_open:
+            self.channel._report_epg_heartbeat()
+        mock_open.assert_not_called()
+
+
+    def test_report_epg_heartbeat_not_playing_clears_state(self) -> None:
+        """_report_epg_heartbeat() clears now-playing state when the player is idle."""
+
+        import chn_nlziet
+        chn_nlziet.Channel._now_playing = {"type": "epg", "id": "rtl4", "epg_type": "Live"}
+        with patch.object(self.channel, "_get_setting", return_value="true"), \
+                patch("xbmc.Player.isPlaying", return_value=False), \
+                patch("resources.lib.urihandler.UriHandler.open") as mock_open:
+            self.channel._report_epg_heartbeat()
+        self.assertIsNone(chn_nlziet.Channel._now_playing)
+        mock_open.assert_not_called()
+
+
+    def test_report_epg_heartbeat_epg_live_posts_to_endpoint(self) -> None:
+        """_report_epg_heartbeat() POSTs to /heartbeat/epg/{channelId} when playing EPG."""
+
+        import chn_nlziet
+        chn_nlziet.Channel._now_playing = {"type": "epg", "id": "rtl4", "epg_type": "Live"}
+        with patch.object(self.channel, "_get_setting", return_value="true"), \
+                patch("xbmc.Player.isPlaying", return_value=True), \
+                patch("xbmc.Player.getTime", return_value=42.5), \
+                patch("resources.lib.urihandler.UriHandler.open") as mock_open:
+            self.channel._report_epg_heartbeat()
+        mock_open.assert_called_once()
+        call_url = mock_open.call_args[0][0]
+        self.assertIn("/heartbeat/epg/rtl4", call_url)
+        self.assertIn("progress=42500", call_url)
+        self.assertIn("epgType=Live", call_url)
+
+
+    def test_report_epg_heartbeat_epg_restart_uses_correct_type(self) -> None:
+        """_report_epg_heartbeat() sends epgType=Restart for restart streams."""
+
+        import chn_nlziet
+        chn_nlziet.Channel._now_playing = {"type": "epg", "id": "sbs6", "epg_type": "Restart"}
+        with patch.object(self.channel, "_get_setting", return_value="true"), \
+                patch("xbmc.Player.isPlaying", return_value=True), \
+                patch("xbmc.Player.getTime", return_value=10.0), \
+                patch("resources.lib.urihandler.UriHandler.open") as mock_open:
+            self.channel._report_epg_heartbeat()
+        call_url = mock_open.call_args[0][0]
+        self.assertIn("epgType=Restart", call_url)
+
+
+    def test_update_live_item_sets_now_playing_state(self) -> None:
+        """update_live_item() sets Channel._now_playing after stream setup."""
+
+        import chn_nlziet
+        chn_nlziet.Channel._now_playing = None
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("false", "0")
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            self.channel.update_live_item(item)
+        state = chn_nlziet.Channel._now_playing
+        self.assertIsNotNone(state)
+        self.assertEqual(state["type"], "epg")
+        self.assertEqual(state["id"], "test-ch-1")
+
+
+    def test_on_service_calls_report_heartbeat_when_enabled(self) -> None:
+        """service_update() invokes _report_epg_heartbeat() when progress reporting is on."""
+
+        raw = self._appconfig_raw()
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=raw), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+                patch("resources.lib.addonsettings.AddonSettings.set_setting"), \
+                patch.object(self.channel._handler, "refresh_access_token"), \
+                patch.object(self.channel, "_get_setting", return_value="true"), \
+                patch.object(self.channel, "_report_epg_heartbeat") as mock_hb:
+            self.channel.service_update()
+        mock_hb.assert_called_once()
+
 
     # -- process_folder_list: mocked equivalent of TestNlzietChannelLive ---
 

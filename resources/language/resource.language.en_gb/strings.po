@@ -1397,3 +1397,7 @@ msgstr ""
 msgctxt "#30635"
 msgid "Live start offset adjustment (seconds, relative to broadcast start)"
 msgstr ""
+
+msgctxt "#30632"
+msgid "Report playback progress online to the service provider"
+msgstr ""
