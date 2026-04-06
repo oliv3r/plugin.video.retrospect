@@ -190,6 +190,8 @@ class LanguageHelper(object):
     UnauthorizedStream = 30637
     ChannelUnavailable = 30638
     ContentNotPlayable = 30639
+    # 30640 and 30641 taken by channel settings.
+    EpgReportProgress = 30642
 
     Today = 30551
     Yesterday = 30552

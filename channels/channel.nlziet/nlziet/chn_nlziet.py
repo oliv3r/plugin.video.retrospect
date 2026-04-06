@@ -5,7 +5,7 @@ import json
 import time
 import xbmc
 from typing import Any, ClassVar, Dict, List, Optional, Tuple, final
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from resources.lib import chn_class, contenttype, mediatype
 from resources.lib.addonsettings import AddonSettings, LOCAL
@@ -20,6 +20,8 @@ from resources.lib.streams.mpd import Mpd
 from resources.lib.urihandler import UriHandler
 from resources.lib.xbmcwrapper import XbmcWrapper
 
+
+_MS_PER_SECOND = 1000
 
 # App identification headers sent with every API request (auth + content).
 # Values are faked to match the expected API client — not real app versions;
@@ -54,6 +56,11 @@ API_V9_LIVE_HANDSHAKE = "/v9/stream/handshake"
 # NLZIET channel defaults
 APPCONFIG_CACHE_KEY = "nlziet_appconfig"
 APPCONFIG_HEARTBEAT_DEFAULT = 90  # seconds
+
+# EPG heartbeat: valid values for the epgType query parameter.
+EPG_NOW_PLAYING_TYPE_LIVE    = "Live"
+EPG_NOW_PLAYING_TYPE_RESTART = "Restart"
+EPG_NOW_PLAYING_TYPE_REPLAY  = "Replay"
 
 # Indices into the programLocations list returned by the live EPG endpoint.
 PROGRAM_LOCATION_CURRENT = 0
@@ -93,6 +100,10 @@ class Channel(chn_class.Channel):
     Avoids one HTTP round-trip per channel on every channel-list refresh within
     the same Kodi session. Invalidated only by process restart.
     """
+
+    _now_playing: ClassVar[Optional[dict]] = None
+    """Currently playing item state, set by update_live_item; used by the heartbeat."""
+
 
     def __init__(self, channel_info: ChannelInfo) -> None:
         """
@@ -464,6 +475,31 @@ class Channel(chn_class.Channel):
 
     # -- Live channel items ------------------------------------------------
 
+    def _report_epg_heartbeat(self) -> None:
+        """ Playback progress to the heartbeat endpoint. """
+
+        if self._get_setting("nlziet_report_progress") != "true":
+            return
+
+        state = Channel._now_playing
+        if state is None:
+            return
+
+        player = xbmc.Player()
+        if not player.isPlaying():
+            Channel._now_playing = None
+            return
+
+        content_id = state["id"]
+        progress_ms = int(player.getTime() * _MS_PER_SECOND)
+        params = urlencode({"progress": progress_ms, "epgType": state["epg_type"]})
+        url = f"{API_CONTENT_URL}/heartbeat/epg/{content_id}?{params}"
+        UriHandler.open(url, additional_headers=self._request_headers, method="POST")
+        status = UriHandler.instance().status
+        if status.error:
+            Logger.debug(f"NLZIET: Heartbeat POST failed for {url}: {status.code} {status.reason}")
+
+
     def _report_stream_errors(self, name: str, errors: Any) -> None:
         """
         Log errors and show a user-facing dialog for known error types.
@@ -639,6 +675,12 @@ class Channel(chn_class.Channel):
                 )
             item.streams.append(stream)
             item.complete = True
+
+        Channel._now_playing = {
+            "type": "epg",
+            "id": channel_id,
+            "epg_type": EPG_NOW_PLAYING_TYPE_RESTART if live_offset > 0 else EPG_NOW_PLAYING_TYPE_LIVE,
+        }
 
         return item
 
@@ -918,3 +960,4 @@ class Channel(chn_class.Channel):
 
         self._sync_appconfig()
         self._authenticator.active_authentication()
+        self._report_epg_heartbeat()
