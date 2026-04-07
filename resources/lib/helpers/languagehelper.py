@@ -184,6 +184,8 @@ class LanguageHelper(object):
     MissingUsername = 30631
     MissingPassword = 30632
     DeviceCodeExpired = 30633
+    RestartAtProgrammeStart = 30634
+    LiveStartOffsetAdjustment = 30635
 
     Today = 30551
     Yesterday = 30552

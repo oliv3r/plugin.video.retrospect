@@ -89,7 +89,7 @@ MOCK_PROFILE_ACCESS_TOKEN = _make_jwt({
     "profileType": "ChildYoung"
 })
 
-MOCK_TOKEN_RESPONSE = {
+MOCK_TOKEN_RESPONSE: Dict[str, Any] = {
     "id_token": MOCK_ID_TOKEN,
     "access_token": MOCK_ACCESS_TOKEN,
     "expires_in": 3600,

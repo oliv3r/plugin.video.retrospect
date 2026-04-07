@@ -1389,3 +1389,11 @@ msgstr ""
 msgctxt "#30633"
 msgid "Code expired, restarting…"
 msgstr ""
+
+msgctxt "#30634"
+msgid "Restart at programme start"
+msgstr ""
+
+msgctxt "#30635"
+msgid "Live start offset adjustment (seconds, relative to broadcast start)"
+msgstr ""

@@ -18,8 +18,8 @@ if not hasattr(_xbmcgui, "WindowXMLDialog"):
 
 from resources.lib.authentication.nlziethandler import DEVICE_FLOW_USER_AGENT
 from resources.lib.logger import Logger
-from . channeltest import ChannelTest
-from tests.channel_tests.nlziet_mocks import MOCK_APPCONFIG_RESPONSE
+from .channeltest import ChannelTest
+from tests.channel_tests.nlziet_mocks import MOCK_APPCONFIG_RESPONSE, MOCK_EPG_LIVE_RESPONSE
 
 
 class TestNlzietChannel(ChannelTest):
@@ -51,7 +51,6 @@ class TestNlzietChannel(ChannelTest):
         super().tearDown()
 
     # -- Channel metadata --------------------------------------------------
-
 
     def test_channel_exists(self) -> None:
         self.assertIsNotNone(self.channel)
@@ -93,7 +92,6 @@ class TestNlzietChannel(ChannelTest):
         self.assertEqual(self.channel._http_headers.get("Nlziet-AppVersion"), m.NLZIET_WEB_VERSION)
 
     # -- service_update / appconfig cache ----------------------------------
-
 
     def _appconfig_raw(self, extra: Optional[Dict[str, Any]] = None) -> str:
         payload = {"epgCacheTime": 300, "isAppBlocked": False}
@@ -397,7 +395,6 @@ class TestNlzietChannel(ChannelTest):
 
     # -- log_on ------------------------------------------------------------
 
-
     def test_log_on_fast_path_succeeds(self) -> None:
         """log_on() resumes session, selects profile, sets loggedOn on valid token."""
 
@@ -549,7 +546,6 @@ class TestNlzietChannel(ChannelTest):
         self.assertIn("Onderhoud", msg)
 
     # -- log_off -----------------------------------------------------------
-
 
     def test_log_off_deregisters_device_when_device_flow(self) -> None:
         """log_off() calls authenticator log_off and shows dialog."""
@@ -721,7 +717,6 @@ class TestNlzietChannel(ChannelTest):
 
     # -- __list_profiles ---------------------------------------------------
 
-
     def test_list_profiles_returns_profiles(self) -> None:
         """__list_profiles() returns profile list from API response."""
 
@@ -764,7 +759,6 @@ class TestNlzietChannel(ChannelTest):
         self.assertEqual(result, [])
 
     # -- __select_profile_if_needed ----------------------------------------
-
 
     def test_select_profile_if_needed_uses_stored_profile_id(self) -> None:
         """Stored profile_id scopes the token when the current token lacks the profile claim."""
@@ -850,7 +844,6 @@ class TestNlzietChannel(ChannelTest):
 
     # -- switch_profile action ---------------------------------------------
 
-
     def test_switch_profile_action_requires_login(self) -> None:
         """switch_profile() shows LoginFirst and does nothing when not logged in."""
 
@@ -891,7 +884,6 @@ class TestNlzietChannel(ChannelTest):
 
     # -- __profile_type ----------------------------------------------------
 
-
     def test_profile_type_returns_jwt_claim(self) -> None:
         """__profile_type() returns profileType from the handler's token property."""
 
@@ -919,7 +911,6 @@ class TestNlzietChannel(ChannelTest):
         self.assertEqual(result, "")
 
     # -- __run_device_flow / __poll_with_progress --------------------------
-
 
     def test_poll_with_progress_does_not_pass_cancel_lbl_to_dialog(self) -> None:
         """
@@ -1282,6 +1273,317 @@ class TestNlzietChannel(ChannelTest):
         data = json.loads(stored[chn_nlziet.APPCONFIG_CACHE_KEY])
         self.assertIn("heartbeatInterval", data)
 
+    # -- process_folder_list: mocked equivalent of TestNlzietChannelLive ---
+
+    def test_process_folder_list_returns_live_channel_items(self) -> None:
+        """process_folder_list(None) returns MediaItems for each channel in the API response."""
+
+        with patch.object(self.channel, "log_on", return_value=True), \
+             patch.object(self.channel._handler, "get_authentication_token", return_value="tok"), \
+             patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=json.dumps(MOCK_EPG_LIVE_RESPONSE)), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.set_setting"):
+            items = self.channel.process_folder_list(None)
+
+        self.assertIsNotNone(items)
+        self.assertGreater(len(items), 0)
+        urls = [i.url for i in items]
+        expected_ids = [e["channel"]["content"]["id"] for e in MOCK_EPG_LIVE_RESPONSE["data"]]
+        for channel_id in expected_ids:
+            self.assertTrue(any(f"channel={channel_id}" in u for u in urls),
+                            f"No item URL contains channel={channel_id}")
+
+    # -- Channel metadata (live streaming) ---------------------------------
+
+    def test_mainlist_uri_is_live_endpoint(self) -> None:
+        import chn_nlziet
+        self.assertIn(chn_nlziet.API_V9_EPG_LIVE, self.channel.mainListUri)
+
+    # -- create_live_channel_item ------------------------------------------
+
+    def _live_result_set(self, channel_id: str = "test-ch-1", title: str = "Test Channel",
+                         logo_url: str = "https://example.com/test-ch-1.png",
+                         asset_id: str = "abc", program_title: str = "Current Show",
+                         missing_feature: Optional[str] = None) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "channel": {
+                "content": {
+                    "id": channel_id,
+                    "title": title,
+                    "logo": {"normalUrl": logo_url}
+                }
+            },
+            "programLocations": [
+                {"content": {"assetId": asset_id, "title": program_title}}
+            ]
+        }
+        if missing_feature is not None:
+            data["channel"]["missingSubscriptionFeature"] = missing_feature
+        return data
+
+
+    def test_create_live_channel_item_full(self) -> None:
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        self.assertTrue(item.isLive)
+        self.assertTrue(item.isDrmProtected)
+        self.assertIn("channel=test-ch-1", item.url)
+        self.assertEqual(item.thumb, "https://example.com/test-ch-1.png")
+        self.assertEqual(item.description, "Current Show")
+        self.assertEqual(item.metaData.get("asset_id"), "abc")
+
+
+    def test_create_live_channel_item_no_channel(self) -> None:
+        """Missing channel dict returns None."""
+
+        self.assertIsNone(self.channel.create_live_channel_item({}))
+
+
+    def test_create_live_channel_item_no_id(self) -> None:
+        """Channel without id returns None."""
+
+        result_set = {"channel": {"content": {"title": "No ID"}}}
+        self.assertIsNone(self.channel.create_live_channel_item(result_set))
+
+
+    def test_create_live_channel_item_paid(self) -> None:
+        """Channel with missingSubscriptionFeature is marked paid."""
+
+        result_set = self._live_result_set(missing_feature="PremiumFeature")
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+        self.assertTrue(item.isPaid)
+
+    # -- update_live_item --------------------------------------------------
+
+    def test_update_live_item_success(self) -> None:
+        """update_live_item() with a valid handshake response marks item complete."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {
+                "licenseUrl": "https://license.example.com/",
+                "headers": {"Authorization": "Bearer tok"}
+            }
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=handshake_response), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.set_setting"), \
+             patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+             patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+
+
+    def test_update_live_item_no_channel_id_returns_item(self) -> None:
+        """update_live_item() with a URL that has no channel= returns without crash."""
+
+        from resources.lib.mediaitem import MediaItem
+        item = MediaItem("Test", "https://example.com/no-channel-param")
+        result = self.channel.update_live_item(item)
+        self.assertIsNotNone(result)
+        self.assertFalse(result.complete)
+
+
+    def test_update_live_item_extra_query_params_do_not_corrupt_channel_id(self) -> None:
+        """update_live_item() extracts channel ID correctly even with extra query parameters."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        expected_channel_id = result_set["channel"]["content"]["id"]
+        item.url += "&extra=param"
+
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://lic.example.com/", "headers": {}}
+        })
+        captured_url = []
+
+
+        def capture_open(url: str, **kwargs: Any) -> str:
+            captured_url.append(url)
+            return handshake_response
+
+        with patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+             patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+
+        self.assertTrue(updated.complete)
+        self.assertTrue(
+            any(f"channel={expected_channel_id}" in u and "extra=param" not in u
+                for u in captured_url),
+            f"Expected clean channel ID in handshake URL, got: {captured_url}")
+        """update_live_item() with a non-JSON handshake response returns without crash."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIsNotNone(item)
+
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value="<html>Service Unavailable</html>"):
+            result = self.channel.update_live_item(item)
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result.complete)
+
+
+    def test_update_live_item_has_no_start_offset(self) -> None:
+        """update_live_item() with padding disabled does not add startOffsetInSeconds."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://lic.example.com/", "headers": {}}
+        })
+        captured_url = []
+
+
+        def capture_open(url: str, **kwargs: Any) -> str:
+            captured_url.append(url)
+            return handshake_response
+
+
+        def no_padding(channel: Any, setting_id: str, value_for_none: Any = None, store: Any = None) -> str:
+            return "false" if setting_id == "nlziet_restart_padding" else "0"
+
+        with patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""), \
+             patch("resources.lib.addonsettings.AddonSettings.get_channel_setting",
+                   side_effect=no_padding), \
+             patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+             patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            updated = self.channel.update_live_item(item)
+
+        self.assertTrue(updated.complete)
+        self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
+
+    # -- update_live_item: restart padding + live offset ---------------------
+
+    def _channel_setting_side_effect(self, padding_value: str, slider_value: str = "0") -> Any:
+        def _side_effect(channel: Any, setting_id: str, value_for_none: Any = None, store: Any = None) -> Optional[str]:
+            if setting_id == "nlziet_restart_padding":
+                return padding_value
+            if setting_id == "nlziet_live_start_offset":
+                return slider_value
+            return None
+        return _side_effect
+
+
+    def _make_live_update_mocks(self, padding_value: str, slider_value: str = "0",
+                                appconfig_padding: int = 0) -> Any:
+        """Return (captured_url, context_managers) for update_live_item tests."""
+
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://lic.example.com/", "headers": {}}
+        })
+        appconfig_json = json.dumps({"liveStreamRestartStartPadding": appconfig_padding})
+        captured_url = []
+
+
+        def capture_open(url: str, **kwargs: Any) -> str:
+            captured_url.append(url)
+            return handshake_response
+
+
+        def get_setting_side_effect(setting_id: str, store: Any = None) -> str:
+            if setting_id == "nlziet_appconfig":
+                return appconfig_json
+            return ""
+
+        return captured_url, [
+            patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open),
+            patch("resources.lib.addonsettings.AddonSettings.get_setting",
+                  side_effect=get_setting_side_effect),
+            patch("resources.lib.addonsettings.AddonSettings.get_channel_setting",
+                  side_effect=self._channel_setting_side_effect(padding_value, slider_value)),
+            patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"),
+            patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"),
+        ]
+
+
+    def test_update_live_item_restart_padding_appends_offset(self) -> None:
+        """update_live_item() with padding on uses liveStreamRestartStartPadding as offset."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "0", appconfig_padding=120)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertTrue(any("startOffsetInSeconds=120" in u for u in captured_url))
+
+
+    def test_update_live_item_positive_slider_adds_to_padding(self) -> None:
+        """update_live_item() adds slider value on top of padding offset."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "30", appconfig_padding=120)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertTrue(any("startOffsetInSeconds=150" in u for u in captured_url))
+
+
+    def test_update_live_item_negative_slider_reduces_offset(self) -> None:
+        """update_live_item() subtracts negative slider from padding without going below 0."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "-60", appconfig_padding=120)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertTrue(any("startOffsetInSeconds=60" in u for u in captured_url))
+
+
+    def test_update_live_item_total_offset_clamped_to_zero(self) -> None:
+        """update_live_item() omits startOffsetInSeconds when combined total is negative."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "-120", appconfig_padding=30)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
+
+
+    def test_update_live_item_padding_off_no_offset(self) -> None:
+        """update_live_item() omits startOffsetInSeconds when padding toggle is off."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("false", "0", appconfig_padding=180)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
+
+
+    def test_update_live_item_offset_sets_manifest_config(self) -> None:
+        """update_live_item() sets inputstream.adaptive.manifest_config when offset > 0."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "0", appconfig_padding=90)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        stream_props = dict(updated.streams[-1].Properties)
+        self.assertIn("inputstream.adaptive.manifest_config", stream_props)
+        config = json.loads(stream_props["inputstream.adaptive.manifest_config"])
+        self.assertEqual(config.get("live_offset"), 90)
 
 class TestNlzietAppconfigLive(ChannelTest):
     """
@@ -1533,7 +1835,7 @@ class TestNlzietChannelLive(ChannelTest):
 
 
     def test_profile_selected_after_login(self) -> None:
-        """Live: a profile is active after login (profile_id is set)."""
+        """Live: a profile is active after login (profile_id is stored)."""
 
         self.assertTrue(self.channel.loggedOn)
         self.assertIsNotNone(self.channel._get_profile_id())
