@@ -27,6 +27,9 @@ from resources.lib.xbmcwrapper import XbmcWrapper
 APPCONFIG_CACHE_KEY = "nlziet_appconfig"
 APPCONFIG_HEARTBEAT_DEFAULT = 90  # seconds
 
+_DEVICE_FLOW_REFRESH_INTERVAL = 0.5   # seconds between UI refresh ticks during device flow
+_DEVICE_FLOW_STOP_TIMEOUT = 2.0       # seconds to wait for poll thread after dialog closes
+
 # App identification headers sent with every API request (auth + content).
 # Values are faked to match the expected API client — not real app versions;
 # these were current at implementation time (2025-03).
@@ -249,13 +252,13 @@ class Channel(chn_class.Channel):
 
         username = self._get_setting("nlziet_username", value_for_none=None) or ""
         label = LanguageHelper.get_localized_string(LanguageHelper.Username)
-        username = XbmcWrapper.show_key_board(default=username, heading="NLZIET - {}".format(label))
+        username = XbmcWrapper.show_key_board(username, f"NLZIET - {label}")
         if not username:
             return False
         AddonSettings.set_channel_setting(self, "nlziet_username", username)
 
         label = LanguageHelper.get_localized_string(LanguageHelper.Password)
-        Vault().set_channel_setting(self.guid, "nlziet_password", setting_name="NLZIET - {}".format(label))
+        Vault().set_channel_setting(self.guid, "nlziet_password", f"NLZIET - {label}")
         password = Vault().get_channel_setting(self.guid, "nlziet_password")
         if not password:
             return False
@@ -263,55 +266,53 @@ class Channel(chn_class.Channel):
         return self._headless_login(username, password)
 
 
-    def _poll_with_progress(self, auth_data: dict, handler: NLZIETHandler) -> str:
+    def _poll_with_progress(self, auth_data: dict, handler: NLZIETHandler,
+                            monitor: xbmc.Monitor) -> str:
         """
         Poll device flow with a progress dialog.
 
         :param auth_data: The device flow response from _device_authorization_request().
         :param handler: The active authentication handler.
-        :return: ``"success"``, ``"timeout"``, ``"manual"``, ``"canceled"``
+        :param monitor: Kodi monitor used to detect Kodi shutdown.
+        :return: ``"success"``,
+                 ``"timeout"``,
+                 ``"manual"``,
+                 ``"canceled"``
                  (see :class:`~resources.lib.deviceauthdialog.DeviceAuthDialog`),
-                 or ``"error"`` on (unexpected) failures.
+                 ``"error"`` on (unexpected) failures.
         """
 
         dialog = DeviceAuthDialog(
-            title=LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupTitle),
-            visit_text=LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupVisit),
+            logo_path=self.icon,
             visit_url=auth_data["verification_uri"],
-            code_text=LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupEnterCode),
             code=auth_data["user_code"],
             timeout=auth_data["expires_in"],
-            manual_label=LanguageHelper.get_localized_string(LanguageHelper.ManualLogin),
             qr_url=auth_data["qr_url"],
-            logo_path=self.icon)
+            show_manual_button=True,
+        )
 
-        monitor = xbmc.Monitor()
         def _poll_worker() -> None:
-            try:
-                while not dialog.stop_event.wait(0.5):
-                    if monitor.abortRequested():
-                        dialog.close_with("canceled")
-                        return
+            while not dialog.stop_event.wait(_DEVICE_FLOW_REFRESH_INTERVAL):
+                if monitor.abortRequested():
+                    dialog.close_with("canceled")
+                    return
 
-                    dialog.update_progress()
+                dialog.update_progress()
 
-                    result = handler.poll_device_authorization(auth_data["device_code"])
-                    if result != "pending":
-                        dialog.close_with(result)
-                        return
-            except Exception:
-                Logger.error("Device flow poll worker failed", exc_info=True)
-                dialog.close_with("error")
+                result = handler.poll_device_authorization(auth_data["device_code"])
+                if result != "pending":
+                    dialog.close_with(result)
+                    return
 
         poll_thread = threading.Thread(target=_poll_worker, daemon=True)
         poll_thread.start()
         dialog.doModal()
 
-        # When the user chose manual login, don't block waiting for the
+        # When the user choses manual login, don't block waiting for the
         # in-flight HTTP poll to complete — the stop_event is already set so
         # the daemon thread will exit as soon as the current request returns.
         if dialog.result != "manual":
-            poll_thread.join(timeout=2.0)
+            poll_thread.join(timeout=_DEVICE_FLOW_STOP_TIMEOUT)
 
         return dialog.result or "error"
 
@@ -344,7 +345,7 @@ class Channel(chn_class.Channel):
                     LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupFailed))
                 return False
 
-            result = self._poll_with_progress(device_auth, handler)
+            result = self._poll_with_progress(device_auth, handler, monitor)
             Logger.debug("NLZIET: Device flow poll result: %s", result)
             if result == "success":
                 return True

@@ -297,7 +297,9 @@ class TestNlzietChannel(ChannelTest):
 
         mock_active = MagicMock()
         mock_active.logged_on = False
-        with patch.object(self.channel._handler, "active_authentication", return_value=mock_active):
+        mock_h = MagicMock()
+        mock_h.active_authentication.return_value = mock_active
+        with patch.object(self.channel, "_create_handler", return_value=mock_h):
             result = self.channel._resume_session()
         self.assertIsNone(result)
 
@@ -629,10 +631,7 @@ class TestNlzietChannel(ChannelTest):
     def test_log_on_token_expired_falls_through_silently(self) -> None:
         """When active_authentication cannot resume (refresh failed), log_on() falls through silently to device flow."""
 
-        mock_active = MagicMock()
-        mock_active.logged_on = False
-        with patch.object(self.channel._handler,
-                          "active_authentication", return_value=mock_active), \
+        with patch.object(self.channel, "_resume_session", return_value=None), \
              patch.object(self.channel, "_get_setting", return_value=None), \
              patch("chn_nlziet.Vault") as mock_vault, \
              patch.object(self.channel, "_run_device_flow", return_value=None) as mock_flow, \
@@ -646,10 +645,7 @@ class TestNlzietChannel(ChannelTest):
     def test_log_on_interactive_tries_device_flow_first(self) -> None:
         """log_on() attempts device flow when no token and no stored credentials."""
 
-        mock_active = MagicMock()
-        mock_active.logged_on = False
-        with patch.object(self.channel._handler,
-                          "active_authentication", return_value=mock_active), \
+        with patch.object(self.channel, "_resume_session", return_value=None), \
              patch.object(self.channel, "_get_setting", return_value=None), \
              patch("chn_nlziet.Vault") as mock_vault, \
              patch.object(self.channel, "_run_device_flow", return_value=None) as mock_flow:
@@ -662,10 +658,7 @@ class TestNlzietChannel(ChannelTest):
     def test_log_on_device_flow_success_completes_session(self) -> None:
         """log_on() sets up the session after a successful device flow."""
 
-        mock_active = MagicMock()
-        mock_active.logged_on = False
-        with patch.object(self.channel._handler,
-                          "active_authentication", return_value=mock_active), \
+        with patch.object(self.channel, "_resume_session", return_value=None), \
              patch.object(self.channel, "_get_setting", return_value=None), \
              patch("chn_nlziet.Vault") as mock_vault, \
              patch.object(self.channel, "_run_device_flow", return_value=True), \
@@ -681,10 +674,7 @@ class TestNlzietChannel(ChannelTest):
     def test_log_on_device_flow_canceled_returns_none(self) -> None:
         """log_on() returns None when device flow is canceled."""
 
-        mock_active = MagicMock()
-        mock_active.logged_on = False
-        with patch.object(self.channel._handler,
-                          "active_authentication", return_value=mock_active), \
+        with patch.object(self.channel, "_resume_session", return_value=None), \
              patch.object(self.channel, "_get_setting", return_value=None), \
              patch("chn_nlziet.Vault") as mock_vault, \
              patch.object(self.channel, "_run_device_flow", return_value=None):
@@ -720,10 +710,7 @@ class TestNlzietChannel(ChannelTest):
     def test_log_on_nothing_stored_no_notification_device_flow_started(self) -> None:
         """Nothing configured → device flow started with no notification."""
 
-        mock_active = MagicMock()
-        mock_active.logged_on = False
-        with patch.object(self.channel._handler,
-                          "active_authentication", return_value=mock_active), \
+        with patch.object(self.channel, "_resume_session", return_value=None), \
              patch.object(self.channel, "_get_setting", return_value=None), \
              patch("chn_nlziet.Vault") as mock_vault, \
              patch.object(self.channel, "_run_device_flow", return_value=None) as mock_flow:
@@ -939,7 +926,7 @@ class TestNlzietChannel(ChannelTest):
         cancel_lbl must NOT be passed as a positional arg to DeviceAuthDialog.
 
         Real Kodi's C __new__ rejects extra args; also passing cancel_lbl at
-        position 7 collides with manual_label which is passed as keyword.
+        position 7 collides with show_manual_button which is passed as keyword.
         """
 
         flow = {
@@ -962,13 +949,12 @@ class TestNlzietChannel(ChannelTest):
         call_args = MockDialog.call_args
         positional = call_args.args if call_args else ()
         keyword = call_args.kwargs if call_args else {}
-        # DeviceAuthDialog(title, visit_text, uri, code_text, code, timeout, ...)
-        # Position 7 onwards must be absent (no cancel_lbl crammed in before manual_label)
-        self.assertLessEqual(len(positional), 6,
-                             "DeviceAuthDialog called with too many positional args "
-                             "(cancel_lbl must not be passed positionally)")
-        self.assertIn("manual_label", keyword,
-                      "manual_label should be passed as keyword")
+        # DeviceAuthDialog(visit_url, code, timeout, ...) — localised strings are defaults inside the dialog
+        # Position 4 onwards must be absent (no extra positional args)
+        self.assertLessEqual(len(positional), 3,
+                             "DeviceAuthDialog called with too many positional args")
+        self.assertIn("show_manual_button", keyword,
+                      "show_manual_button should be passed as keyword")
 
 
     def test_timeout_retries_device_flow_without_dialog(self) -> None:
@@ -1203,7 +1189,7 @@ class TestNlzietChannel(ChannelTest):
         self.assertTrue(result)
         mock_vault_cls.return_value.set_channel_setting.assert_called_once_with(
             self.channel.guid, "nlziet_password",
-            setting_name=ANY)
+            ANY)
         mock_settings.set_channel_setting.assert_called_once_with(
             self.channel, "nlziet_username", "user@example.com")
 
