@@ -64,7 +64,7 @@ class Channel(chn_class.Channel):
         self.__timezone = pytz.timezone("Europe/Amsterdam")
 
         handler = RtlXlHandler("rtlxl.nl", "3_R0XjstXd4MpkuqdK3kKxX20icLSE3FB27yQKl4zQVjVpqmgSyRCPKKLGdn5kjoKq")
-        self.__authenticator = Authenticator(handler, self.channelName)
+        self.__authenticator = Authenticator(handler, self.channelName, self.guid, "rtlxl_password")
 
         #===============================================================================================================
         # Test cases:
@@ -92,7 +92,7 @@ class Channel(chn_class.Channel):
         # Always try to log on. If the username was changed to empty, we should clear the current
         # log in.
         username = self._get_setting("rtlxl_username", value_for_none=None)
-        result = self.__authenticator.log_on(username=username, channel_guid=self.guid, setting_id="rtlxl_password")
+        result = self.__authenticator.log_on(username=username)
 
         if not username:
             Logger.info("No username for RTL specified. Not logging in.")

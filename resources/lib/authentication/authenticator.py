@@ -10,11 +10,15 @@ from ..xbmcwrapper import XbmcWrapper
 
 class Authenticator(object):
     def __init__(self, handler: AuthenticationHandler,
-                 channel_name: Optional[str] = None):
+                 channel_name: Optional[str] = None,
+                 channel_guid: Optional[str] = None,
+                 password_setting_id: Optional[str] = None):
         """ Main logic handler for authentication.
 
         :param handler:             The authentication handler to use.
         :param channel_name:        Channel display name used in dialogs.
+        :param channel_guid:        Channel GUID for Vault password lookup.
+        :param password_setting_id: Vault setting ID for the password.
 
         """
 
@@ -26,18 +30,15 @@ class Authenticator(object):
 
         self.__handler = handler
         self.__channel_name = channel_name
+        self.__channel_guid = channel_guid
+        self.__password_setting_id = password_setting_id
 
-    def log_on(self, username: str, password: Optional[str] = None,
-               setting_id: Optional[str] = None,
-               channel_guid: Optional[str] = None) -> AuthenticationResult:
+    def log_on(self, username: str, password: Optional[str] = None) -> AuthenticationResult:
         """ Performs the logon of a user. Either with the specified password or via a lookup. Also
         logs off a previous user if the username has changed from previous logins.
 
         :param username:        The username
         :param password:        The password to use
-        :param setting_id:      The ID of the setting where the password is stored
-        :param channel_guid:    The GUID of the channel, if the password is stored in a
-                                channel setting.
 
         :returns: An indication of a successful login.
 
@@ -64,10 +65,10 @@ class Authenticator(object):
         if password is None:
             Logger.info("Retrieving password for user: %s", self.__safe_log(username))
             v = Vault()
-            if channel_guid:
-                password = v.get_channel_setting(channel_guid, setting_id)
+            if self.__channel_guid:
+                password = v.get_channel_setting(self.__channel_guid, self.__password_setting_id)
             else:
-                password = v.get_setting(setting_id)
+                password = v.get_setting(self.__password_setting_id)
 
         if not password:
             Logger.error("No password specified")

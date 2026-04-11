@@ -225,13 +225,12 @@ class TestAuthenticator(unittest.TestCase):
 
     def test_log_on_fetches_password_from_channel_setting(self) -> None:
         h = _MockAuthHandler("test.realm")
-        a = Authenticator(h)
+        a = Authenticator(h, channel_guid="chan-guid", password_setting_id="pwd_setting")
         with patch.object(h, "log_on",
                           return_value=AuthenticationResult("user@example.com")) as mock_log_on, \
              patch("resources.lib.authentication.authenticator.Vault") as mock_vault_cls:
             mock_vault_cls.return_value.get_channel_setting.return_value = "vault-pwd"
-            result = a.log_on("user@example.com", password=None,
-                              setting_id="pwd_setting", channel_guid="chan-guid")
+            result = a.log_on("user@example.com", password=None)
         mock_vault_cls.return_value.get_channel_setting.assert_called_once_with(
             "chan-guid", "pwd_setting")
         mock_log_on.assert_called_once_with("user@example.com", "vault-pwd")
@@ -239,23 +238,23 @@ class TestAuthenticator(unittest.TestCase):
 
     def test_log_on_fetches_password_from_global_setting(self) -> None:
         h = _MockAuthHandler("test.realm")
-        a = Authenticator(h)
+        a = Authenticator(h, password_setting_id="pwd_setting")
         with patch.object(h, "log_on",
                           return_value=AuthenticationResult("user@example.com")) as mock_log_on, \
              patch("resources.lib.authentication.authenticator.Vault") as mock_vault_cls:
             mock_vault_cls.return_value.get_setting.return_value = "vault-pwd"
-            result = a.log_on("user@example.com", password=None, setting_id="pwd_setting")
+            result = a.log_on("user@example.com", password=None)
         mock_vault_cls.return_value.get_setting.assert_called_once_with("pwd_setting")
         mock_log_on.assert_called_once_with("user@example.com", "vault-pwd")
         self.assertTrue(result.logged_on)
 
     def test_log_on_returns_unauthenticated_when_vault_has_no_password(self) -> None:
         h = _MockAuthHandler("test.realm")
-        a = Authenticator(h)
+        a = Authenticator(h, password_setting_id="pwd_setting")
         with patch.object(h, "log_on") as mock_log_on, \
              patch("resources.lib.authentication.authenticator.Vault") as mock_vault_cls:
             mock_vault_cls.return_value.get_setting.return_value = None
-            result = a.log_on("user@example.com", password=None, setting_id="pwd_setting")
+            result = a.log_on("user@example.com", password=None)
         mock_log_on.assert_not_called()
         self.assertFalse(result.logged_on)
         self.assertEqual(result.error, "missing_password")
@@ -343,3 +342,48 @@ class TestAuthenticatorUnit(unittest.TestCase):
             a = Authenticator(h, channel_name="My Channel")
             a.log_on("user", "pass")
         mock_dialog.assert_not_called()
+
+    def test_init_with_setting_id(self) -> None:
+        a = Authenticator(_MockAuthHandler("test.realm"), password_setting_id="my_setting")
+        self.assertIsNotNone(a)
+
+    def test_init_with_channel_guid(self) -> None:
+        a = Authenticator(_MockAuthHandler("test.realm"), channel_guid="abc-123", password_setting_id="pw")
+        self.assertIsNotNone(a)
+
+    def test_log_on_looks_up_vault_setting(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.Vault") as MockVault:
+            MockVault.return_value.get_setting.return_value = None
+            a = Authenticator(h, password_setting_id="my_setting")
+            a.log_on("user")
+        MockVault.return_value.get_setting.assert_called_once_with("my_setting")
+
+    def test_log_on_looks_up_vault_channel_setting(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.Vault") as MockVault:
+            MockVault.return_value.get_channel_setting.return_value = None
+            a = Authenticator(h, channel_guid="abc-123", password_setting_id="pw")
+            a.log_on("user")
+        MockVault.return_value.get_channel_setting.assert_called_once_with("abc-123", "pw")
+
+    def test_log_on_vault_returns_none_fails_without_login(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.Vault") as MockVault:
+            MockVault.return_value.get_setting.return_value = None
+            a = Authenticator(h, password_setting_id="my_setting")
+            result = a.log_on("user")
+        self.assertFalse(result.logged_on)
+
+    def test_log_on_explicit_password_skips_vault(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.Vault") as MockVault:
+            a = Authenticator(h, password_setting_id="my_setting")
+            a.log_on("user", "explicit_pass")
+        MockVault.assert_not_called()
+
+    def test_log_on_empty_username_returns_not_logged_on(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        a = Authenticator(h)
+        result = a.log_on("")
+        self.assertFalse(result.logged_on)
