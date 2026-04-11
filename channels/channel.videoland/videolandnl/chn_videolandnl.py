@@ -82,7 +82,7 @@ class Channel(chn_class.Channel):
         handler = GigyaHandler(
             "videoland.com", "3_t2Z1dFrbWR-IjcC-Bod1kei6W91UKmeiu3dETVG5iKaY4ILBRzVsmgRHWWo0fqqd",
             "4_hRanGnYDFjdiZQfh-ghhhg", AddonSettings.get_client_id())
-        self.__authenticator = Authenticator(handler, self.channelName)
+        self.__authenticator = Authenticator(handler, self.channelName, self.guid, "videolandnl_password")
         self.__jwt = None
         self.__uid = None
         self.__has_premium = False
@@ -476,9 +476,7 @@ class Channel(chn_class.Channel):
         if not username:
             XbmcWrapper.show_dialog(None, LanguageHelper.MissingCredentials)
 
-        result = self.__authenticator.log_on(
-            username=username, password=password,
-            channel_guid=self.guid, setting_id="videolandnl_password")
+        result = self.__authenticator.log_on(username=username, password=password)
 
         # Set some defaults
         self.__uid = result.uid
