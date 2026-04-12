@@ -45,28 +45,8 @@ class Authenticator(object):
 
         """
 
-        result = self.__handler.active_authentication()
-        Logger.debug("Cached session present: %s", result.logged_on)
-
-        logged_on_user = result.username
-        if result.logged_on and logged_on_user:
-            if username and logged_on_user.lower() == username.lower():
-                Logger.info("Active session found for user (%s), skipping login.",
-                            self.__safe_log(logged_on_user))
-                return result
-
-            Logger.warning("Different user requested (%s → %s). Logging off first.",
-                           self.__safe_log(logged_on_user), self.__safe_log(username))
-            self.__handler.log_off(logged_on_user)
-
-        if result.error:
-            Logger.error("Session check failed: %s", result.error)
-
-            if result.error == "network_error":
-                XbmcWrapper.show_dialog(self.__channel_name, LanguageHelper.NetworkLoginError)
-            else:
-                XbmcWrapper.show_dialog(self.__channel_name, result.error)
-
+        result = self._resume_session(username)
+        if result.logged_on or result.error == "network_error":
             return result
 
         if not username:
@@ -90,6 +70,47 @@ class Authenticator(object):
         if result.error:
             XbmcWrapper.show_dialog(self.__channel_name, result.error)
         return result
+
+    def _resume_session(self, username: Optional[str]) -> AuthenticationResult:
+        """ Check whether an existing active session can be reused.
+
+        Checks for a valid session matching the requested username first. If a
+        different user is stored, the current session is logged off as a side
+        effect. Errors are surfaced via a dialog as a side effect.
+
+        :param username:    The username being logged on (may be None).
+
+        :returns: - ``AuthenticationResult`` with ``logged_on=True``: valid resumed session.
+                  - ``AuthenticationResult`` with ``error=<error>``: error surfaced; caller falls through.
+                  - ``AuthenticationResult`` with ``error="no_active_session"``: no session; caller falls through.
+
+        """
+
+        result = self.__handler.active_authentication()
+        Logger.debug("Cached session present: %s", result.logged_on)
+
+        if result.logged_on:
+            logged_on_user = result.username
+            if username and logged_on_user.lower() == username.lower():
+                Logger.info("Active session found for user (%s), skipping login.",
+                            self.__safe_log(logged_on_user))
+                return result
+
+            Logger.warning("Different user requested (%s → %s). Logging off first.",
+                           self.__safe_log(logged_on_user), self.__safe_log(username))
+            self.log_off(logged_on_user)
+
+        if result.error:
+            Logger.error("Session check failed: %s", result.error)
+
+            if result.error == "network_error":
+                XbmcWrapper.show_dialog(self.__channel_name, LanguageHelper.NetworkLoginError)
+            else:
+                XbmcWrapper.show_dialog(self.__channel_name, result.error)
+
+            return result
+
+        return AuthenticationResult("", error="no_active_session")
 
     def active_authentication(self) -> AuthenticationResult:
         """ Check if the user with the given name is currently authenticated.
