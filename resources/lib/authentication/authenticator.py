@@ -3,6 +3,7 @@ from typing import Optional
 
 from .authenticationhandler import AuthenticationHandler
 from .authenticationresult import AuthenticationResult
+from ..helpers.languagehelper import LanguageHelper
 from ..logger import Logger
 from ..vault import Vault
 from ..xbmcwrapper import XbmcWrapper
@@ -46,6 +47,16 @@ class Authenticator(object):
 
         result = self.__handler.active_authentication()
         logged_on_user = result.username
+
+        if result.error:
+            Logger.error("Session check failed: %s", result.error)
+
+            if result.error == "network_error":
+                XbmcWrapper.show_dialog(self.__channel_name, LanguageHelper.NetworkLoginError)
+            else:
+                XbmcWrapper.show_dialog(self.__channel_name, result.error)
+
+            return result
 
         # Check if the existing login is the same as the requested one.
         if logged_on_user and (not username or logged_on_user.lower() != username.lower()):

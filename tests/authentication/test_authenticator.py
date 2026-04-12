@@ -17,15 +17,19 @@ from resources.lib.urihandler import UriHandler
 class _MockAuthHandler(AuthenticationHandler):
     """Minimal in-process handler for unit tests — no network required."""
 
-    def __init__(self, realm: str, error: Optional[str] = None) -> None:
+    def __init__(self, realm: str, error: Optional[str] = None,
+                 session_error: Optional[str] = None,
+                 active_user: Optional[str] = None) -> None:
         super().__init__(realm, device_id=None)
         self._error = error
+        self._session_error = session_error
+        self._active_user = active_user
 
     def log_on(self, username: str, password: str) -> AuthenticationResult:
         return AuthenticationResult("", error=self._error)
 
     def active_authentication(self) -> AuthenticationResult:
-        return AuthenticationResult("")
+        return AuthenticationResult(self._active_user or "", error=self._session_error)
 
     def log_off(self, username: str) -> bool:
         return True
@@ -387,3 +391,56 @@ class TestAuthenticatorUnit(unittest.TestCase):
         a = Authenticator(h)
         result = a.log_on("")
         self.assertFalse(result.logged_on)
+
+    def test_network_error_aborts_and_shows_localized_dialog(self) -> None:
+        h = _MockAuthHandler("test.realm", session_error="network_error")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog, \
+             patch("resources.lib.authentication.authenticator.LanguageHelper.get_localized_string",
+                   return_value="Network error message"):
+            a = Authenticator(h, channel_name="My Channel")
+            result = a.log_on("user", "pass")
+        self.assertFalse(result.logged_on)
+        mock_dialog.assert_called_once_with("My Channel", mock_dialog.call_args[0][1])
+
+    def test_network_error_does_not_reach_handler_log_on(self) -> None:
+        h = _MockAuthHandler("test.realm", session_error="network_error")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog"), \
+             patch.object(h, "log_on", wraps=h.log_on) as mock_log_on:
+            a = Authenticator(h)
+            a.log_on("user", "pass")
+        mock_log_on.assert_not_called()
+
+    def test_session_error_passes_raw_message_to_dialog(self) -> None:
+        h = _MockAuthHandler("test.realm", session_error="some_other_error")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h, channel_name="My Channel")
+            a.log_on("user", "pass")
+        mock_dialog.assert_called_once_with("My Channel", "some_other_error")
+
+    def test_log_off_without_force_skips_handler_when_no_active_session(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+            a = Authenticator(h)
+            a.log_off("", force=False)
+        mock_log_off.assert_not_called()
+
+    def test_force_log_off_skips_handler_when_no_active_session(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+            a = Authenticator(h)
+            a.log_off("", force=True)
+        mock_log_off.assert_not_called()
+
+    def test_log_off_without_force_skips_handler_for_different_active_user(self) -> None:
+        h = _MockAuthHandler("test.realm", active_user="other@example.com")
+        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+            a = Authenticator(h)
+            a.log_off("user@example.com", force=False)
+        mock_log_off.assert_not_called()
+
+    def test_force_log_off_uses_active_username(self) -> None:
+        h = _MockAuthHandler("test.realm", active_user="other@example.com")
+        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+            a = Authenticator(h)
+            a.log_off("user@example.com", force=True)
+        mock_log_off.assert_called_once_with("other@example.com")

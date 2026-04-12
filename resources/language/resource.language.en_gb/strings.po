@@ -1293,3 +1293,7 @@ msgstr ""
 msgctxt "#30609"
 msgid "Error"
 msgstr ""
+
+msgctxt "#30610"
+msgid "Could not sign in due to a network error. Please check your internet connection and try again."
+msgstr ""

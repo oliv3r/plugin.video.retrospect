@@ -158,6 +158,8 @@ class LanguageHelper(object):
     CleanupCache = 30604
     CleanupConfirmation = 30605
 
+    NetworkLoginError = 30610
+
     Today = 30551
     Yesterday = 30552
     DayBeforeYesterday = 30553
