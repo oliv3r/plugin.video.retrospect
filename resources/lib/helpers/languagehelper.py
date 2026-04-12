@@ -161,6 +161,8 @@ class LanguageHelper(object):
     CleanupConfirmation = 30605
 
     NetworkLoginError = 30610
+    MissingUsername = 30611
+    MissingPassword = 30612
 
     Today = 30551
     Yesterday = 30552

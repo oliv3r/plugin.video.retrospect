@@ -61,21 +61,10 @@ class Authenticator(object):
         if result.logged_on or result.error == "network_error":
             return result
 
-        if not username:
-            Logger.warning("No username specified")
-            return AuthenticationResult("", error="missing_username")
-
         if password is None:
             password = self._get_password()
-        if not password:
-            Logger.error("No password specified")
-            return AuthenticationResult("", error="missing_password")
 
-        Logger.info("Logging on user: %s", self.__safe_log(username))
-        result = self.__handler.log_on(username, password)
-        if result.error:
-            XbmcWrapper.show_dialog(self.__channel_name, result.error)
-        return result
+        return self._auto_login(username, password)
 
     def _resume_session(self, username: Optional[str]) -> AuthenticationResult:
         """ Check whether an existing active session can be reused.
@@ -117,6 +106,61 @@ class Authenticator(object):
             return result
 
         return AuthenticationResult("", error="no_active_session")
+
+    def _auto_login(self, username: Optional[str],
+                    password: Optional[str] = None) -> AuthenticationResult:
+        """
+        Validate that credentials are present, then perform a headless login.
+
+        :param username:    The username to log on with.
+        :param password:    The password to use.
+
+        :returns: The result of the login attempt.
+
+        """
+
+        Logger.debug("Attempting credential login for: %s", self.__safe_log(username))
+
+        if not username and not password:
+            Logger.warning("Missing credentials")
+            return AuthenticationResult("", error="missing_credentials")
+
+        if not username:
+            Logger.error("No username specified")
+            XbmcWrapper.show_dialog(self.__channel_name, LanguageHelper.MissingUsername)
+            return AuthenticationResult("", error="missing_username")
+
+        if not password:
+            Logger.error("No password specified")
+            XbmcWrapper.show_dialog(self.__channel_name, LanguageHelper.MissingPassword)
+            return AuthenticationResult("", error="missing_password")
+
+        return self._headless_login(username, password)
+
+    def _headless_login(self, username: str, password: str) -> AuthenticationResult:
+        """ Perform a direct credential login via the handler.
+
+        :param username:    The username to log on with.
+        :param password:    The password to use.
+
+        :returns: The result of the login attempt.
+
+        """
+
+        Logger.debug("Headless login for: %s", self.__safe_log(username))
+        result = self.__handler.log_on(username, password)
+        if result.logged_on:
+            return result
+
+        Logger.debug("Headless login failed for %s: %s", self.__safe_log(username), result.error)
+        if result.error == "invalid_credentials":
+            XbmcWrapper.show_dialog(self.__channel_name, LanguageHelper.LoginErrorTitle)
+        elif result.error == "network_error":
+            XbmcWrapper.show_dialog(self.__channel_name, LanguageHelper.NetworkLoginError)
+        else:
+            XbmcWrapper.show_dialog(self.__channel_name, result.error)
+
+        return result
 
     def active_authentication(self) -> AuthenticationResult:
         """ Check if the user with the given name is currently authenticated.
@@ -197,6 +241,7 @@ class Authenticator(object):
                                               store=LOCAL)
         else:
             AddonSettings.set_setting(self.__username_setting_id, username, store=LOCAL)
+
         return username
 
     def _get_password(self) -> Optional[str]:
@@ -207,13 +252,20 @@ class Authenticator(object):
         """
 
         Logger.debug("Reading password from vault (setting_id=%s)", self.__password_setting_id)
+        if not self.__password_setting_id:
+            return None
         if self.__channel_guid:
             return Vault().get_channel_setting(self.__channel_guid, self.__password_setting_id)
         else:
             return Vault().get_setting(self.__password_setting_id)
 
-    def _set_password(self) -> None:
-        """ Prompt for and store the password in the Vault. """
+    def _set_password(self) -> Optional[str]:
+        """ Prompt for a password, store it in the Vault, then return the stored value.
+
+        :returns: The password now in the Vault, or None if no value is stored
+                  (e.g. first-time setup with the keyboard cancelled).
+
+        """
 
         label = LanguageHelper.get_localized_string(LanguageHelper.Password)
         heading = "{} - {}".format(self.__channel_name, label)
@@ -222,6 +274,8 @@ class Authenticator(object):
             Vault().set_channel_setting(self.__channel_guid, self.__password_setting_id, heading)
         else:
             Vault().set_setting(self.__password_setting_id, heading)
+
+        return self._get_password()
 
     def __safe_log(self, text: Optional[str]) -> Optional[str]:
         """ Obfuscate a string for logging by masking every odd-positioned character.
