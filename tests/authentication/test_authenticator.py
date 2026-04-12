@@ -11,6 +11,7 @@ from resources.lib.authentication.authenticationresult import AuthenticationResu
 from resources.lib.authentication.rtlxlhandler import RtlXlHandler
 from resources.lib.authentication.authenticator import Authenticator
 from resources.lib.addonsettings import LOCAL
+from resources.lib.helpers.languagehelper import LanguageHelper
 from resources.lib.logger import Logger
 from resources.lib.urihandler import UriHandler
 
@@ -27,7 +28,7 @@ class _MockAuthHandler(AuthenticationHandler):
         self._active_user = active_user
 
     def log_on(self, username: str, password: str) -> AuthenticationResult:
-        return AuthenticationResult("", error=self._error)
+        return AuthenticationResult(username if not self._error else "", error=self._error)
 
     def active_authentication(self) -> AuthenticationResult:
         return AuthenticationResult(self._active_user or "", error=self._session_error)
@@ -463,12 +464,103 @@ class TestAuthenticatorUnit(unittest.TestCase):
 
     def test_log_on_no_stored_username_returns_missing_username(self) -> None:
         h = _MockAuthHandler("test.realm")
-        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings:
+        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings, \
+             patch("resources.lib.authentication.authenticator.Vault") as MockVault:
             MockSettings.get_setting.return_value = None
-            a = Authenticator(h, username_setting_id="nlziet_username")
+            MockVault.return_value.get_setting.return_value = "stored_password"
+            a = Authenticator(h, username_setting_id="nlziet_username",
+                              password_setting_id="nlziet_password")
             result = a.log_on()
         self.assertFalse(result.logged_on)
         self.assertEqual(result.error, "missing_username")
+
+    def test_log_on_no_credentials_stored_returns_missing_credentials(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings, \
+             patch("resources.lib.authentication.authenticator.Vault") as MockVault:
+            MockSettings.get_setting.return_value = None
+            MockVault.return_value.get_setting.return_value = None
+            a = Authenticator(h, username_setting_id="nlziet_username",
+                              password_setting_id="nlziet_password")
+            result = a.log_on()
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "missing_credentials")
+
+    def test_auto_login_no_credentials_returns_missing_credentials(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        a = Authenticator(h)
+        result = a._auto_login(None, None)
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "missing_credentials")
+
+    def test_auto_login_no_username_returns_missing_username(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h, channel_name="My Channel")
+            result = a._auto_login(None, "password")
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "missing_username")
+        mock_dialog.assert_called_once_with("My Channel", LanguageHelper.MissingUsername)
+
+    def test_auto_login_no_password_returns_missing_password(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h, channel_name="My Channel")
+            result = a._auto_login("user", None)
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "missing_password")
+        mock_dialog.assert_called_once_with("My Channel", LanguageHelper.MissingPassword)
+
+    def test_auto_login_no_credentials_does_not_show_dialog(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h)
+            result = a._auto_login(None, None)
+        self.assertEqual(result.error, "missing_credentials")
+        mock_dialog.assert_not_called()
+
+    def test_headless_login_success_returns_result_without_dialog(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h)
+            result = a._headless_login("user", "pass")
+        self.assertTrue(result.logged_on)
+        mock_dialog.assert_not_called()
+
+    def test_headless_login_invalid_credentials_shows_localized_dialog(self) -> None:
+        h = _MockAuthHandler("test.realm", error="invalid_credentials")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h, channel_name="My Channel")
+            result = a._headless_login("user", "pass")
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "invalid_credentials")
+        mock_dialog.assert_called_once_with("My Channel", LanguageHelper.LoginErrorTitle)
+
+    def test_headless_login_network_error_shows_localized_dialog(self) -> None:
+        h = _MockAuthHandler("test.realm", error="network_error")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h, channel_name="My Channel")
+            result = a._headless_login("user", "pass")
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "network_error")
+        mock_dialog.assert_called_once_with("My Channel", LanguageHelper.NetworkLoginError)
+
+    def test_headless_login_unknown_error_shows_raw_error_in_dialog(self) -> None:
+        h = _MockAuthHandler("test.realm", error="some_other_error")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h, channel_name="My Channel")
+            result = a._headless_login("user", "pass")
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "some_other_error")
+        mock_dialog.assert_called_once_with("My Channel", "some_other_error")
+
+    def test_get_password_without_setting_id_returns_none(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.Vault") as MockVault:
+            a = Authenticator(h)
+            result = a._get_password()
+        self.assertIsNone(result)
+        MockVault.assert_not_called()
 
     def test_log_on_explicit_password_skips_vault(self) -> None:
         h = _MockAuthHandler("test.realm")
@@ -541,6 +633,13 @@ class TestAuthenticatorUnit(unittest.TestCase):
             a = Authenticator(h)
             a.log_off("user@example.com")  # should not raise
 
+    def test_log_off_without_force_same_user_calls_handler(self) -> None:
+        h = _MockAuthHandler("test.realm", active_user="user@example.com")
+        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+            a = Authenticator(h)
+            a.log_off("user@example.com", force=False)
+        mock_log_off.assert_called_once_with("user@example.com")
+
     def test_resume_session_returns_existing_for_same_user(self) -> None:
         h = _MockAuthHandler("test.realm", active_user="user@example.com")
         with patch.object(h, "log_on", wraps=h.log_on) as mock_log_on:
@@ -568,8 +667,8 @@ class TestAuthenticatorUnit(unittest.TestCase):
 
     def test_log_on_with_active_session_and_empty_username_logs_off(self) -> None:
         """If an active session exists and the caller supplies an empty
-        username, treat this as an explicit log-off request and return
-        missing_username.
+        username, the existing session is logged off and missing_credentials
+        is returned (no username and no password were supplied).
         """
         h = _MockAuthHandler("test.realm", active_user="user@example.com")
         with patch.object(h, "log_off", return_value=True) as mock_log_off:
@@ -578,7 +677,7 @@ class TestAuthenticatorUnit(unittest.TestCase):
 
         mock_log_off.assert_called_once_with("user@example.com")
         self.assertFalse(result.logged_on)
-        self.assertEqual(result.error, "missing_username")
+        self.assertEqual(result.error, "missing_credentials")
 
     def test_resume_session_case_insensitive_match_returns_existing(self) -> None:
         h = _MockAuthHandler("test.realm", active_user="User@Example.com")

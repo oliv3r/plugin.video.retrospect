@@ -1299,3 +1299,11 @@ msgstr ""
 msgctxt "#30610"
 msgid "Could not sign in due to a network error. Please check your internet connection and try again."
 msgstr ""
+
+msgctxt "#30611"
+msgid "Missing username"
+msgstr ""
+
+msgctxt "#30612"
+msgid "Missing password"
+msgstr ""
