@@ -64,7 +64,7 @@ class Channel(chn_class.Channel):
         self.__timezone = pytz.timezone("Europe/Amsterdam")
 
         handler = RtlXlHandler("rtlxl.nl", "3_R0XjstXd4MpkuqdK3kKxX20icLSE3FB27yQKl4zQVjVpqmgSyRCPKKLGdn5kjoKq")
-        self.__authenticator = Authenticator(handler)
+        self.__authenticator = Authenticator(handler, self.channelName)
 
         #===============================================================================================================
         # Test cases:

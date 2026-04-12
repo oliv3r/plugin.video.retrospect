@@ -305,3 +305,41 @@ class TestAuthenticator(unittest.TestCase):
              patch.object(h, "log_off", return_value=False) as mock_log_off:
             a.log_off("user@example.com", force=True)
         mock_log_off.assert_called_once_with("user@example.com")
+
+
+class TestAuthenticatorUnit(unittest.TestCase):
+    """Unit tests for Authenticator — no network required."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        Logger.create_logger(None, str(cls), min_log_level=0)
+        UriHandler.create_uri_handler(ignore_ssl_errors=False)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        Logger.instance().close_log()
+
+    def test_init_with_channel_name(self) -> None:
+        a = Authenticator(_MockAuthHandler("test.realm"), channel_name="Test Channel")
+        self.assertIsNotNone(a)
+
+    def test_login_error_passes_channel_name_to_dialog(self) -> None:
+        h = _MockAuthHandler("test.realm", error="Login failed")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h, channel_name="My Channel")
+            a.log_on("user", "pass")
+        mock_dialog.assert_called_once_with("My Channel", "Login failed")
+
+    def test_login_error_passes_none_when_no_channel_name(self) -> None:
+        h = _MockAuthHandler("test.realm", error="Login failed")
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h)
+            a.log_on("user", "pass")
+        mock_dialog.assert_called_once_with(None, "Login failed")
+
+    def test_login_success_does_not_show_dialog(self) -> None:
+        h = _MockAuthHandler("test.realm", error=None)
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
+            a = Authenticator(h, channel_name="My Channel")
+            a.log_on("user", "pass")
+        mock_dialog.assert_not_called()

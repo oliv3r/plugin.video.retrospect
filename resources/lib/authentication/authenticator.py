@@ -9,10 +9,12 @@ from ..xbmcwrapper import XbmcWrapper
 
 
 class Authenticator(object):
-    def __init__(self, handler: AuthenticationHandler):
+    def __init__(self, handler: AuthenticationHandler,
+                 channel_name: Optional[str] = None):
         """ Main logic handler for authentication.
 
         :param handler:             The authentication handler to use.
+        :param channel_name:        Channel display name used in dialogs.
 
         """
 
@@ -23,6 +25,7 @@ class Authenticator(object):
             raise ValueError("Invalid authenication handler specified.")
 
         self.__handler = handler
+        self.__channel_name = channel_name
 
     def log_on(self, username: str, password: Optional[str] = None,
                setting_id: Optional[str] = None,
@@ -72,7 +75,7 @@ class Authenticator(object):
 
         result = self.__handler.log_on(username, password)
         if result.error:
-            XbmcWrapper.show_dialog(None, result.error)
+            XbmcWrapper.show_dialog(self.__channel_name, result.error)
         return result
 
     def active_authentication(self) -> AuthenticationResult:
