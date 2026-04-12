@@ -445,10 +445,41 @@ class TestAuthenticatorUnit(unittest.TestCase):
             a.log_off("user@example.com", force=True)
         mock_log_off.assert_called_once_with("other@example.com")
 
+    def test_log_off_handler_failure_is_logged(self) -> None:
+        h = _MockAuthHandler("test.realm", active_user="user@example.com")
+        with patch.object(h, "log_off", return_value=False):
+            a = Authenticator(h)
+            a.log_off("user@example.com")  # should not raise
+
+    def test_resume_session_returns_existing_for_same_user(self) -> None:
+        h = _MockAuthHandler("test.realm", active_user="user@example.com")
+        with patch.object(h, "log_on", wraps=h.log_on) as mock_log_on:
+            a = Authenticator(h)
+            result = a.log_on("user@example.com", "pass")
+        self.assertTrue(result.logged_on)
+        mock_log_on.assert_not_called()
+
+    def test_resume_session_returns_existing_for_different_user(self) -> None:
+        h = _MockAuthHandler("test.realm", active_user="other@example.com")
+        with patch.object(h, "log_off", wraps=h.log_off) as mock_log_off, \
+             patch.object(h, "log_on", wraps=h.log_on) as mock_log_on, \
+             patch("resources.lib.authentication.authenticator.Vault"):
+            a = Authenticator(h, password_setting_id="pw")
+            result = a.log_on("user@example.com")
+        mock_log_off.assert_called_once_with("other@example.com")
+        mock_log_on.assert_called_once()
+
+    def test_resume_session_no_existing_session_falls_through(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch.object(h, "log_on", wraps=h.log_on) as mock_log_on:
+            a = Authenticator(h)
+            a.log_on("user@example.com", "pass")
+        mock_log_on.assert_called_once_with("user@example.com", "pass")
+
     def test_log_on_with_active_session_and_empty_username_logs_off(self) -> None:
         """If an active session exists and the caller supplies an empty
-        username, the implementation should treat this as a request to log
-        off the active user and return a missing_username result.
+        username, treat this as an explicit log-off request and return
+        missing_username.
         """
         h = _MockAuthHandler("test.realm", active_user="user@example.com")
         with patch.object(h, "log_off", return_value=True) as mock_log_off:
@@ -459,13 +490,12 @@ class TestAuthenticatorUnit(unittest.TestCase):
         self.assertFalse(result.logged_on)
         self.assertEqual(result.error, "missing_username")
 
-    def test_log_on_with_active_session_and_different_username_logs_off(self) -> None:
-        """When a different username is requested, the handler should be asked
-        to log off the currently active user before attempting login.
-        """
-        h = _MockAuthHandler("test.realm", active_user="user@example.com")
-        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+    def test_resume_session_case_insensitive_match_returns_existing(self) -> None:
+        h = _MockAuthHandler("test.realm", active_user="User@Example.com")
+        with patch.object(h, "log_off", wraps=h.log_off) as mock_log_off, \
+             patch.object(h, "log_on", wraps=h.log_on) as mock_log_on:
             a = Authenticator(h)
-            a.log_on("other@example.com", "pass")
-
-        mock_log_off.assert_called_once_with("user@example.com")
+            result = a.log_on("user@example.com", "pass")
+        self.assertTrue(result.logged_on)
+        mock_log_off.assert_not_called()
+        mock_log_on.assert_not_called()
