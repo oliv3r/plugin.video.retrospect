@@ -82,7 +82,7 @@ class Channel(chn_class.Channel):
         handler = GigyaHandler(
             "videoland.com", "3_t2Z1dFrbWR-IjcC-Bod1kei6W91UKmeiu3dETVG5iKaY4ILBRzVsmgRHWWo0fqqd",
             "4_hRanGnYDFjdiZQfh-ghhhg", AddonSettings.get_client_id())
-        self.__authenticator = Authenticator(handler)
+        self.__authenticator = Authenticator(handler, self.channelName)
         self.__jwt = None
         self.__uid = None
         self.__has_premium = False
