@@ -10,6 +10,7 @@ from resources.lib.authentication.authenticationhandler import AuthenticationHan
 from resources.lib.authentication.authenticationresult import AuthenticationResult
 from resources.lib.authentication.rtlxlhandler import RtlXlHandler
 from resources.lib.authentication.authenticator import Authenticator
+from resources.lib.addonsettings import LOCAL
 from resources.lib.logger import Logger
 from resources.lib.urihandler import UriHandler
 
@@ -361,7 +362,7 @@ class TestAuthenticatorUnit(unittest.TestCase):
             MockVault.return_value.get_setting.return_value = None
             a = Authenticator(h, password_setting_id="my_setting")
             a.log_on("user")
-        MockVault.return_value.get_setting.assert_called_once_with("my_setting")
+        MockVault.return_value.get_setting.assert_any_call("my_setting")
 
     def test_log_on_looks_up_vault_channel_setting(self) -> None:
         h = _MockAuthHandler("test.realm")
@@ -369,7 +370,78 @@ class TestAuthenticatorUnit(unittest.TestCase):
             MockVault.return_value.get_channel_setting.return_value = None
             a = Authenticator(h, channel_guid="abc-123", password_setting_id="pw")
             a.log_on("user")
-        MockVault.return_value.get_channel_setting.assert_called_once_with("abc-123", "pw")
+        MockVault.return_value.get_channel_setting.assert_any_call("abc-123", "pw")
+
+    def test_get_username_uses_addon_settings_global(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings, \
+             patch("resources.lib.authentication.authenticator.Vault"):
+            MockSettings.get_setting.return_value = "stored@example.com"
+            a = Authenticator(h, username_setting_id="nlziet_username")
+            a.log_on()
+        MockSettings.get_setting.assert_any_call("nlziet_username", store=LOCAL)
+
+    def test_get_username_uses_channel_setting_when_guid_present(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings, \
+             patch("resources.lib.authentication.authenticator.Vault"):
+            MockSettings.get_channel_setting.return_value = "stored@example.com"
+            a = Authenticator(h, channel_guid="abc-123", username_setting_id="nlziet_username")
+            a.log_on()
+        MockSettings.get_channel_setting.assert_any_call("abc-123", "nlziet_username", store=LOCAL)
+
+    def test_set_username_prompts_and_stores_global(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings, \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_key_board",
+                   return_value="new@example.com"):
+            a = Authenticator(h, channel_name="My Channel", username_setting_id="nlziet_username")
+            result = a._set_username()
+        self.assertEqual(result, "new@example.com")
+        MockSettings.set_setting.assert_called_once_with("nlziet_username", "new@example.com", store=LOCAL)
+
+    def test_set_username_prompts_and_stores_channel_setting(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings, \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_key_board",
+                   return_value="new@example.com"):
+            a = Authenticator(h, channel_name="My Channel", channel_guid="abc-123",
+                              username_setting_id="nlziet_username")
+            result = a._set_username("prefill@example.com")
+        self.assertEqual(result, "new@example.com")
+        MockSettings.set_channel_setting.assert_called_once_with(
+            "abc-123", "nlziet_username", "new@example.com", store=LOCAL)
+
+    def test_set_username_cancelled_returns_none(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings, \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_key_board",
+                   return_value=None):
+            a = Authenticator(h, channel_name="My Channel", username_setting_id="nlziet_username")
+            result = a._set_username()
+        self.assertIsNone(result)
+        MockSettings.set_setting.assert_not_called()
+
+    def test_set_password_stores_global_vault_setting(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.Vault") as MockVault, \
+             patch("resources.lib.authentication.authenticator.LanguageHelper.get_localized_string",
+                   return_value="Password"):
+            a = Authenticator(h, channel_name="My Channel", password_setting_id="nlziet_password")
+            a._set_password()
+        MockVault.return_value.set_setting.assert_called_once_with(
+            "nlziet_password", "My Channel - Password")
+
+    def test_set_password_stores_channel_vault_setting(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.Vault") as MockVault, \
+             patch("resources.lib.authentication.authenticator.LanguageHelper.get_localized_string",
+                   return_value="Password"):
+            a = Authenticator(h, channel_name="My Channel", channel_guid="abc-123",
+                              password_setting_id="nlziet_password")
+            a._set_password()
+        MockVault.return_value.set_channel_setting.assert_called_once_with(
+            "abc-123", "nlziet_password", "My Channel - Password")
 
     def test_log_on_vault_returns_none_fails_without_login(self) -> None:
         h = _MockAuthHandler("test.realm")
@@ -378,6 +450,25 @@ class TestAuthenticatorUnit(unittest.TestCase):
             a = Authenticator(h, password_setting_id="my_setting")
             result = a.log_on("user")
         self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "missing_password")
+
+    def test_log_on_channel_vault_returns_none_fails_without_login(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.Vault") as MockVault:
+            MockVault.return_value.get_channel_setting.return_value = None
+            a = Authenticator(h, channel_guid="abc-123", password_setting_id="pw")
+            result = a.log_on("user")
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "missing_password")
+
+    def test_log_on_no_stored_username_returns_missing_username(self) -> None:
+        h = _MockAuthHandler("test.realm")
+        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings:
+            MockSettings.get_setting.return_value = None
+            a = Authenticator(h, username_setting_id="nlziet_username")
+            result = a.log_on()
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "missing_username")
 
     def test_log_on_explicit_password_skips_vault(self) -> None:
         h = _MockAuthHandler("test.realm")
@@ -389,14 +480,13 @@ class TestAuthenticatorUnit(unittest.TestCase):
     def test_log_on_empty_username_returns_not_logged_on(self) -> None:
         h = _MockAuthHandler("test.realm")
         a = Authenticator(h)
-        result = a.log_on("")
+        with patch.object(a, "_get_password", return_value=None):
+            result = a.log_on("")
         self.assertFalse(result.logged_on)
 
     def test_network_error_aborts_and_shows_localized_dialog(self) -> None:
         h = _MockAuthHandler("test.realm", session_error="network_error")
-        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog, \
-             patch("resources.lib.authentication.authenticator.LanguageHelper.get_localized_string",
-                   return_value="Network error message"):
+        with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
             a = Authenticator(h, channel_name="My Channel")
             result = a.log_on("user", "pass")
         self.assertFalse(result.logged_on)

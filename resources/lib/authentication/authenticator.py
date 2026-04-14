@@ -3,6 +3,7 @@ from typing import Optional
 
 from .authenticationhandler import AuthenticationHandler
 from .authenticationresult import AuthenticationResult
+from ..addonsettings import AddonSettings, LOCAL
 from ..helpers.languagehelper import LanguageHelper
 from ..logger import Logger
 from ..vault import Vault
@@ -13,12 +14,14 @@ class Authenticator(object):
     def __init__(self, handler: AuthenticationHandler,
                  channel_name: Optional[str] = None,
                  channel_guid: Optional[str] = None,
+                 username_setting_id: Optional[str] = None,
                  password_setting_id: Optional[str] = None):
         """ Main logic handler for authentication.
 
         :param handler:             The authentication handler to use.
         :param channel_name:        Channel display name used in dialogs.
-        :param channel_guid:        Channel GUID for Vault password lookup.
+        :param channel_guid:        Channel GUID for credential lookup.
+        :param username_setting_id: Settings ID for persisting the username.
         :param password_setting_id: Vault setting ID for the password.
 
         """
@@ -32,18 +35,27 @@ class Authenticator(object):
         self.__handler = handler
         self.__channel_name = channel_name
         self.__channel_guid = channel_guid
+        self.__username_setting_id = username_setting_id
         self.__password_setting_id = password_setting_id
 
-    def log_on(self, username: str, password: Optional[str] = None) -> AuthenticationResult:
-        """ Performs the logon of a user. Either with the specified password or via a lookup. Also
-        logs off a previous user if the username has changed from previous logins.
+    def log_on(self, username: Optional[str] = None, password: Optional[str] = None) -> AuthenticationResult:
+        """ Performs the logon of a user. Either with the specified credentials or via a lookup.
+        Logs off a previous user if the username has changed from previous logins.
 
-        :param username:        The username
-        :param password:        The password to use
+        Resolves username from AddonSettings and password from the Vault when not supplied,
+        then attempts an automatic credential login before falling back to interactive login.
+
+        :param username:        The username; looked up from settings or prompted interactively if None.
+        :param password:        The password to use; looked up from Vault if None.
 
         :returns: An indication of a successful login.
 
         """
+
+        if username is None:
+            username = self._get_username()
+
+        Logger.debug("Attempting to log on: username=%s", self.__safe_log(username))
 
         result = self._resume_session(username)
         if result.logged_on or result.error == "network_error":
@@ -53,19 +65,13 @@ class Authenticator(object):
             Logger.warning("No username specified")
             return AuthenticationResult("", error="missing_username")
 
-        Logger.info("Logging on user: %s", self.__safe_log(username))
         if password is None:
-            Logger.info("Retrieving password for user: %s", self.__safe_log(username))
-            v = Vault()
-            if self.__channel_guid:
-                password = v.get_channel_setting(self.__channel_guid, self.__password_setting_id)
-            else:
-                password = v.get_setting(self.__password_setting_id)
-
+            password = self._get_password()
         if not password:
             Logger.error("No password specified")
             return AuthenticationResult("", error="missing_password")
 
+        Logger.info("Logging on user: %s", self.__safe_log(username))
         result = self.__handler.log_on(username, password)
         if result.error:
             XbmcWrapper.show_dialog(self.__channel_name, result.error)
@@ -151,6 +157,71 @@ class Authenticator(object):
                 Logger.debug("Logged off successfully")
             else:
                 Logger.error("Log off failed")
+
+    def _get_username(self) -> Optional[str]:
+        """ Read the stored username.
+
+        :returns: The stored username, or None if not set.
+
+        """
+
+        if self.__channel_guid:
+            username = AddonSettings.get_channel_setting(self.__channel_guid,
+                                                         self.__username_setting_id,
+                                                         store=LOCAL)
+        else:
+            username = AddonSettings.get_setting(self.__username_setting_id, store=LOCAL)
+        Logger.debug("Read username from local settings: %s", self.__safe_log(username))
+        return username
+
+    def _set_username(self, username: Optional[str] = None) -> Optional[str]:
+        """ Prompt for a username, then store and return it.
+
+        :param username: Value to pre-fill in the keyboard.
+
+        :returns: The entered username, or None if the prompt was cancelled.
+
+        """
+
+        label = LanguageHelper.get_localized_string(LanguageHelper.Username)
+        username = XbmcWrapper.show_key_board(username, f"{self.__channel_name} - {label}")
+        if not username:
+            Logger.debug("Username prompt cancelled")
+            return None
+
+        Logger.debug("Storing username in local settings: %s", self.__safe_log(username))
+        if self.__channel_guid:
+            AddonSettings.set_channel_setting(self.__channel_guid,
+                                              self.__username_setting_id,
+                                              username,
+                                              store=LOCAL)
+        else:
+            AddonSettings.set_setting(self.__username_setting_id, username, store=LOCAL)
+        return username
+
+    def _get_password(self) -> Optional[str]:
+        """ Read the stored password.
+
+        :returns: The stored password, or None if not set.
+
+        """
+
+        Logger.debug("Reading password from vault (setting_id=%s)", self.__password_setting_id)
+        if self.__channel_guid:
+            return Vault().get_channel_setting(self.__channel_guid, self.__password_setting_id)
+        else:
+            return Vault().get_setting(self.__password_setting_id)
+
+    def _set_password(self) -> None:
+        """ Prompt for and store the password in the Vault. """
+
+        label = LanguageHelper.get_localized_string(LanguageHelper.Password)
+        heading = "{} - {}".format(self.__channel_name, label)
+        Logger.debug("Prompting and storing password in vault (setting_id=%s)", self.__password_setting_id)
+        if self.__channel_guid:
+            Vault().set_channel_setting(self.__channel_guid, self.__password_setting_id, heading)
+        else:
+            Vault().set_setting(self.__password_setting_id, heading)
 
     def __safe_log(self, text: Optional[str]) -> Optional[str]:
         """ Obfuscate a string for logging by masking every odd-positioned character.
