@@ -54,6 +54,8 @@ class LanguageHelper(object):
     ChannelAdaptiveMode = 30581
     LoginErrorTitle = 30012
     LoginErrorText = 30013
+    Password = 30093
+    Username = 30094
 
     NowPlaying = 30346
     Now = 30347
