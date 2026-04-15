@@ -35,14 +35,15 @@ class LocalSettings(settingsstore.SettingsStore):
                                setting_id,
                                self._get_safe_print_value(setting_id, setting_value))
         else:
-            if channel.id not in LocalSettings.__settings[LocalSettings.__CHANNELS_KEY]:
-                LocalSettings.__settings[LocalSettings.__CHANNELS_KEY][channel.id] = {}
+            channel_id = self._channel_id(channel)
+            if channel_id not in LocalSettings.__settings[LocalSettings.__CHANNELS_KEY]:
+                LocalSettings.__settings[LocalSettings.__CHANNELS_KEY][channel_id] = {}
 
-            LocalSettings.__settings[LocalSettings.__CHANNELS_KEY][channel.id][setting_id] = \
+            LocalSettings.__settings[LocalSettings.__CHANNELS_KEY][channel_id][setting_id] = \
                 setting_value
 
             self._logger.debug("Local Channel Setting Updated: %s:%s: '%s'",
-                               channel.id, setting_id,
+                               channel_id, setting_id,
                                self._get_safe_print_value(setting_id, setting_value))
 
         # store the file
@@ -62,9 +63,10 @@ class LocalSettings(settingsstore.SettingsStore):
             self._logger.trace("Local Setting: %s='%s'", setting_id,
                                self._get_safe_print_value(setting_id, setting_value))
         else:
-            channel_settings = LocalSettings.__settings["channels"].get(channel.id, {})
+            channel_id = self._channel_id(channel)
+            channel_settings = LocalSettings.__settings["channels"].get(channel_id, {})
             setting_value = channel_settings.get(setting_id, default)
-            self._logger.trace("Local Channel Setting: %s.%s='%s'", channel.id, setting_id,
+            self._logger.trace("Local Channel Setting: %s.%s='%s'", channel_id, setting_id,
                                self._get_safe_print_value(setting_id, setting_value))
 
         # the default was already retrieved by the dict.get(key, default)

@@ -88,6 +88,30 @@ class SettingsStore(object):
 
         pass
 
+    @staticmethod
+    def _channel_guid(channel):
+        """ Returns the channel GUID from either a channel object or a plain GUID string.
+
+        :param channel: A channel object (with a `.guid` attribute) or a GUID string.
+        :returns: The channel GUID.
+        :rtype: str
+
+        """
+
+        return channel if isinstance(channel, str) else channel.guid
+
+    @staticmethod
+    def _channel_id(channel):
+        """ Returns the channel ID from either a channel object or a plain ID string.
+
+        :param channel: A channel object (with an `.id` attribute) or an ID string.
+        :returns: The channel ID.
+        :rtype: str
+
+        """
+
+        return channel if isinstance(channel, str) else channel.id
+
     def _get_safe_print_value(self, setting_id, setting_value):
         """ Makes sure we strip out the sensitive data while logging.
 
