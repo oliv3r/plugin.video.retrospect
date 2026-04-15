@@ -173,6 +173,9 @@ class LanguageHelper(object):
     DeviceSetupQrInstruction = 30617
     QrAddonMissing = 30618
     LogOffError = 30619
+    ConnectionError = 30620
+    DeviceCodeExpired = 30621
+    DeviceSetupFailed = 30622
 
     Today = 30551
     Yesterday = 30552

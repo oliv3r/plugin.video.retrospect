@@ -1,13 +1,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+import threading
+import xbmc
 from typing import Optional
 
-from .authenticationhandler import AuthenticationHandler
+from .authenticationhandler import AuthenticationHandler, DeviceAuthData, DeviceAuthResult
 from .authenticationresult import AuthenticationResult
 from ..addonsettings import AddonSettings, LOCAL
+from ..deviceauthdialog import DeviceAuthDialog
 from ..helpers.languagehelper import LanguageHelper
 from ..logger import Logger
 from ..vault import Vault
 from ..xbmcwrapper import XbmcWrapper
+
+_DEVICE_FLOW_REFRESH_INTERVAL = 0.5        # seconds between UI refresh ticks during device flow
+_DEVICE_FLOW_STOP_TIMEOUT = 2.0            # seconds to wait for poll thread after dialog closes
+_DEVICE_FLOW_NOTIFICATION_TIMEOUT = 30000  # milliseconds to show the notification to the user
 
 
 class Authenticator(object):
@@ -15,7 +22,8 @@ class Authenticator(object):
                  channel_name: Optional[str] = None,
                  channel_guid: Optional[str] = None,
                  username_setting_id: Optional[str] = None,
-                 password_setting_id: Optional[str] = None):
+                 password_setting_id: Optional[str] = None,
+                 channel_icon: Optional[str] = None):
         """ Main logic handler for authentication.
 
         :param handler:             The authentication handler to use.
@@ -23,6 +31,7 @@ class Authenticator(object):
         :param channel_guid:        Channel GUID for credential lookup.
         :param username_setting_id: Settings ID for persisting the username.
         :param password_setting_id: Vault setting ID for the password.
+        :param channel_icon:        Path to the channel icon for dialogs.
 
         """
 
@@ -37,6 +46,7 @@ class Authenticator(object):
         self.__channel_guid = channel_guid
         self.__username_setting_id = username_setting_id
         self.__password_setting_id = password_setting_id
+        self.__channel_icon = channel_icon
 
     def log_on(self, username: Optional[str] = None, password: Optional[str] = None) -> AuthenticationResult:
         """ Performs the logon of a user. Either with the specified credentials or via a lookup.
@@ -64,7 +74,22 @@ class Authenticator(object):
         if password is None:
             password = self._get_password()
 
-        return self._auto_login(username, password)
+        result = self._auto_login(username, password)
+        if result.logged_on or result.error == "network_error":
+            return result
+
+        if self.__handler.supports_device_authorization:
+            result = self._device_manual_login(username)
+        else:
+            result = self._manual_login(username)
+
+        if result.logged_on or result.error == "network_error":
+            return result
+
+        Logger.debug("Failed to log on: username=%s, password=%s",
+                     self.__safe_log(username),
+                     "******" if password else None)
+        return AuthenticationResult("", error="login_failed")
 
     def _resume_session(self, username: Optional[str]) -> AuthenticationResult:
         """ Check whether an existing active session can be reused.
@@ -85,6 +110,11 @@ class Authenticator(object):
         Logger.debug("Cached session present: %s", result.logged_on)
 
         if result.logged_on:
+            if self.__handler.device_flow:
+                Logger.info("Active device-flow session found (%s), resuming.",
+                            self.__safe_log(result.username))
+                return result
+
             logged_on_user = result.username
             if username and logged_on_user.lower() == username.lower():
                 Logger.info("Active session found for user (%s), skipping login.",
@@ -100,8 +130,6 @@ class Authenticator(object):
 
             if result.error == "network_error":
                 XbmcWrapper.show_dialog(self.__channel_name, LanguageHelper.NetworkLoginError)
-            else:
-                XbmcWrapper.show_dialog(self.__channel_name, result.error)
 
             return result
 
@@ -122,7 +150,7 @@ class Authenticator(object):
         Logger.debug("Attempting credential login for: %s", self.__safe_log(username))
 
         if not username and not password:
-            Logger.warning("Missing credentials")
+            Logger.debug("No credentials configured, skipping headless login")
             return AuthenticationResult("", error="missing_credentials")
 
         if not username:
@@ -133,6 +161,132 @@ class Authenticator(object):
         if not password:
             Logger.error("No password specified")
             XbmcWrapper.show_dialog(self.__channel_name, LanguageHelper.MissingPassword)
+            return AuthenticationResult("", error="missing_password")
+
+        return self._headless_login(username, password)
+
+    def _device_manual_login(self, username: Optional[str] = None) -> AuthenticationResult:
+        """ Run the device authorization flow with a progress dialog and retry logic.
+
+        :param username: Last known username, to pass on as a pre-fill hint.
+
+        :returns: The result of the login attempt; one of ``canceled``,
+                  ``device_setup_failed``, ``aborted``, or a result delegated
+                  from the manual fallback.
+
+        """
+
+        device_name = xbmc.getInfoLabel("System.FriendlyName") or "Kodi Retrospect"
+        Logger.debug("Starting device authorization login for %s", device_name)
+
+        monitor = xbmc.Monitor()
+        while not monitor.abortRequested():
+            result: Optional[DeviceAuthResult] = None
+
+            device_auth = self.__handler._start_device_authorization(device_name)
+            if device_auth:
+                result = self._poll_with_progress(device_auth, monitor)
+                Logger.debug("Device authorization poll result: %r", result)
+
+            if result == DeviceAuthResult.SUCCESS:
+                return self.__handler.active_authentication()
+            if result == DeviceAuthResult.MANUAL:
+                auth_result = self._manual_login(username)
+                if auth_result.logged_on or auth_result.error == "network_error":
+                    return auth_result
+                continue  # failed or canceled → restart with fresh device flow
+            if result == DeviceAuthResult.TIMEOUT:
+                Logger.warning("Device authorization timed out, restarting")
+                XbmcWrapper.show_notification(self.__channel_name, LanguageHelper.DeviceCodeExpired,
+                                              notification_type=XbmcWrapper.Warning,
+                                              display_time=_DEVICE_FLOW_NOTIFICATION_TIMEOUT)
+                continue  # device code expired → restart
+            if result == DeviceAuthResult.CANCELED:
+                Logger.debug("Device authorization canceled by user")
+                return AuthenticationResult("", error="canceled")
+            if result == DeviceAuthResult.ERROR:
+                Logger.error("Device authorization failed with an error")
+                XbmcWrapper.show_dialog(self.__channel_name,
+                                        LanguageHelper.get_localized_string(LanguageHelper.ConnectionError))
+                return AuthenticationResult("", error="device_setup_failed")
+
+            Logger.error("Device authorization login failed with result: %r", result)
+            XbmcWrapper.show_dialog(self.__channel_name,
+                                    LanguageHelper.get_localized_string(LanguageHelper.DeviceSetupFailed))
+            return AuthenticationResult("", error="device_setup_failed")
+
+        return AuthenticationResult("", error="aborted")  # Kodi shutdown requested
+
+    def _poll_with_progress(self, auth_data: DeviceAuthData,
+                            monitor: xbmc.Monitor) -> DeviceAuthResult:
+        """ Poll device flow with a progress dialog.
+
+        :param auth_data:   The device flow response from _start_device_authorization().
+        :param monitor:     Kodi monitor used to detect Kodi shutdown.
+
+        :returns: The terminal :class:`DeviceAuthResult` from the dialog.
+                  (see :class:`~resources.lib.deviceauthdialog.DeviceAuthDialog`)
+
+        """
+
+        Logger.debug("Starting device flow poll (code=%s, expires_in=%s)",
+                     auth_data.user_code, auth_data.expires_in)
+
+        dialog = DeviceAuthDialog(
+            logo_path=self.__channel_icon or None,
+            qr_url=auth_data.qr_url,
+            visit_url=auth_data.verification_uri,
+            code=auth_data.user_code,
+            timeout=auth_data.expires_in,
+        )
+
+        def _poll_worker() -> None:
+            while not dialog.stop_event.wait(_DEVICE_FLOW_REFRESH_INTERVAL):
+                if monitor.abortRequested():
+                    Logger.debug("Kodi abort requested during device flow poll")
+                    dialog.close_with(DeviceAuthResult.CANCELED)
+                    return
+
+                dialog.update_progress()
+
+                result = self.__handler._poll_device_authorization(auth_data.device_code)
+                Logger.debug("Device flow poll result: %s", result)
+                if result != DeviceAuthResult.PENDING:
+                    dialog.close_with(result)
+                    return
+
+        poll_thread = threading.Thread(target=_poll_worker, daemon=True)
+        poll_thread.start()
+        dialog.doModal()
+
+        # On ``manual`` login, skip join() -- stop_event is set and the daemon
+        # thread exits as soon as the current poll request returns.
+        if dialog.result != DeviceAuthResult.MANUAL:
+            poll_thread.join(timeout=_DEVICE_FLOW_STOP_TIMEOUT)
+
+        Logger.debug("Device flow poll completed with result: %s", dialog.result)
+        return dialog.result or DeviceAuthResult.ERROR
+
+    def _manual_login(self, username: Optional[str] = None) -> AuthenticationResult:
+        """ Prompt for username and password interactively, then attempt a headless login.
+
+        Pre-fills the username field with the last known value so the user can
+        correct it if needed. Credentials are stored at prompt time.
+
+        :param username: Value to pre-fill in the username keyboard.
+
+        :returns: The result of the login attempt; ``missing_username`` /
+                  ``missing_password`` if the keyboard was cancelled.
+
+        """
+
+        Logger.debug("Manual login for: %s", self.__safe_log(username) if username else "new user")
+        username = self._set_username(username)
+        if not username:
+            return AuthenticationResult("", error="missing_username")
+
+        password = self._set_password()
+        if not password:
             return AuthenticationResult("", error="missing_password")
 
         return self._headless_login(username, password)

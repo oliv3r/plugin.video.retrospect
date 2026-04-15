@@ -10,6 +10,7 @@ from typing import Any, Optional, Type
 import xbmc
 import xbmcgui
 
+from resources.lib.authentication.authenticationhandler import DeviceAuthResult
 from resources.lib.helpers.languagehelper import LanguageHelper
 from resources.lib.logger import Logger
 from resources.lib.retroconfig import Config
@@ -253,7 +254,7 @@ class DeviceAuthDialog:
         """
         Close the dialog and record an explicit result.
 
-        :param result: Result; see the ``result`` property for valid values.
+        :param result: Terminal result; see the ``result`` property.
         """
 
         self._poll_result = result
