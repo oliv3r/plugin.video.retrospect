@@ -2,11 +2,14 @@
 
 import binascii
 import os
+import threading
 import unittest
-from typing import Optional
+from typing import Optional, cast
 from unittest.mock import MagicMock, patch
 
-from resources.lib.authentication.authenticationhandler import AuthenticationHandler
+from resources.lib.authentication.authenticationhandler import (
+    AuthenticationHandler, DeviceAuthData, DeviceAuthResult,
+)
 from resources.lib.authentication.authenticationresult import AuthenticationResult
 from resources.lib.authentication.rtlxlhandler import RtlXlHandler
 from resources.lib.authentication.authenticator import Authenticator
@@ -14,6 +17,9 @@ from resources.lib.addonsettings import LOCAL
 from resources.lib.helpers.languagehelper import LanguageHelper
 from resources.lib.logger import Logger
 from resources.lib.urihandler import UriHandler
+from resources.lib.xbmcwrapper import XbmcWrapper
+
+_TEST_DEVICE_FLOW_REFRESH_INTERVAL = 0.01
 
 
 class _MockAuthHandler(AuthenticationHandler):
@@ -38,6 +44,170 @@ class _MockAuthHandler(AuthenticationHandler):
 
     def get_authentication_token(self) -> Optional[str]:
         return None
+
+
+class _MockDeviceFlowAuthHandler(_MockAuthHandler):
+    """Like _MockAuthHandler but with device_flow=True."""
+
+    @property
+    def device_flow(self) -> bool:
+        return True
+
+
+class _MockDeviceAuthHandler(_MockAuthHandler):
+    """Like _MockAuthHandler but with device authorization support."""
+
+    def _start_device_authorization(self, device_name: str) -> Optional[DeviceAuthData]:
+        return None
+
+    def _poll_device_authorization(self, device_code: str) -> DeviceAuthResult:
+        return DeviceAuthResult.PENDING
+
+
+class TestAuthenticationHandlerHelpers(unittest.TestCase):
+    """Unit tests for reusable AuthenticationHandler helpers."""
+
+    def setUp(self) -> None:
+        self.handler = _MockAuthHandler("test.realm")
+
+    def test_parse_device_auth_data_returns_normalized_dict(self) -> None:
+        """_parse_device_auth_data() returns a typed device auth dataclass."""
+
+        result = self.handler._parse_device_auth_data(
+            {
+                "device_code": "devcode",
+                "user_code": "ABCD-1234",
+                "verification_uri": "https://example.com/activate",
+                "expires_in": 60,
+                "interval": 5,
+            }
+        )
+
+        self.assertEqual(
+            DeviceAuthData(
+                device_code="devcode",
+                user_code="ABCD-1234",
+                verification_uri="https://example.com/activate",
+                expires_in=60,
+                interval=5,
+            ),
+            result,
+        )
+
+    def test_parse_device_auth_data_returns_none_when_required_field_missing(self) -> None:
+        """_parse_device_auth_data() returns None for incomplete responses."""
+
+        result = self.handler._parse_device_auth_data(
+            {
+                "device_code": "devcode",
+                "user_code": "ABCD-1234",
+                "expires_in": 60,
+                "interval": 5,
+            }
+        )
+
+        self.assertIsNone(result)
+
+
+    def test_parse_device_auth_data_returns_none_when_device_code_missing(self) -> None:
+        result = self.handler._parse_device_auth_data(
+            {"user_code": "X", "verification_uri": "https://x", "expires_in": 60, "interval": 5}
+        )
+        self.assertIsNone(result)
+
+
+    def test_parse_device_auth_data_returns_none_when_user_code_missing(self) -> None:
+        result = self.handler._parse_device_auth_data(
+            {"device_code": "X", "verification_uri": "https://x", "expires_in": 60, "interval": 5}
+        )
+        self.assertIsNone(result)
+
+
+    def test_parse_device_auth_data_returns_none_when_expires_in_missing(self) -> None:
+        result = self.handler._parse_device_auth_data(
+            {"device_code": "X", "user_code": "Y", "verification_uri": "https://x", "interval": 5}
+        )
+        self.assertIsNone(result)
+
+
+    def test_parse_device_auth_data_returns_none_when_interval_missing(self) -> None:
+        result = self.handler._parse_device_auth_data(
+            {"device_code": "X", "user_code": "Y", "verification_uri": "https://x", "expires_in": 60}
+        )
+        self.assertIsNone(result)
+
+
+    def test_parse_device_auth_data_returns_none_when_field_empty(self) -> None:
+        """Provider data with an empty required field is rejected (Layer 1)."""
+
+        result = self.handler._parse_device_auth_data(
+            {"device_code": "", "user_code": "Y", "verification_uri": "https://x",
+             "expires_in": 60, "interval": 5}
+        )
+        self.assertIsNone(result)
+
+
+    def test_parse_device_auth_data_carries_optional_qr_url(self) -> None:
+        result = self.handler._parse_device_auth_data(
+            {"device_code": "X", "user_code": "Y", "verification_uri": "https://x",
+             "expires_in": 60, "interval": 5, "qr_url": "https://qr"}
+        )
+        self.assertIsNotNone(result)
+        assert result is not None  # for mypy
+        self.assertEqual("https://qr", result.qr_url)
+
+
+    def test_device_auth_data_rejects_empty_device_code(self) -> None:
+        """Direct construction with invalid fields raises ValueError (Layer 2)."""
+
+        with self.assertRaises(ValueError):
+            DeviceAuthData(device_code="", user_code="U", verification_uri="https://x",
+                           expires_in=60, interval=5)
+
+
+    def test_device_auth_data_rejects_non_positive_expires_in(self) -> None:
+        with self.assertRaises(ValueError):
+            DeviceAuthData(device_code="D", user_code="U", verification_uri="https://x",
+                           expires_in=0, interval=5)
+
+
+    def test_device_auth_data_accepts_valid_inputs(self) -> None:
+        data = DeviceAuthData(device_code="D", user_code="U", verification_uri="https://x",
+                              expires_in=60, interval=5)
+        self.assertEqual("D", data.device_code)
+        self.assertIsNone(data.qr_url)
+
+
+    def test_device_auth_data_rejects_empty_qr_url(self) -> None:
+        """Optional qr_url must be either None or a non-empty string (Layer 2)."""
+
+        with self.assertRaises(ValueError):
+            DeviceAuthData(device_code="D", user_code="U", verification_uri="https://x",
+                           expires_in=60, interval=5, qr_url="")
+
+
+    def test_parse_device_auth_data_normalizes_empty_qr_url_to_none(self) -> None:
+        """An empty qr_url from the provider should not invalidate the response (Layer 1)."""
+
+        result = self.handler._parse_device_auth_data(
+            {"device_code": "X", "user_code": "Y", "verification_uri": "https://x",
+             "expires_in": 60, "interval": 5, "qr_url": ""}
+        )
+        self.assertIsNotNone(result)
+        assert result is not None  # for mypy
+        self.assertIsNone(result.qr_url)
+
+
+    def test_base_class_stubs_raise_not_implemented(self) -> None:
+        h = AuthenticationHandler("stub.realm", device_id=None)
+        self.assertRaises(NotImplementedError, h.log_on, "u", "p")
+        self.assertRaises(NotImplementedError, h.active_authentication)
+        self.assertRaises(NotImplementedError, h.log_off, "u")
+        self.assertRaises(NotImplementedError, h._start_device_authorization, "dev")
+        self.assertRaises(NotImplementedError, h._poll_device_authorization, "code")
+        self.assertRaises(NotImplementedError, h.get_authentication_token)
+
+
 
 
 class TestAuthenticator(unittest.TestCase):
@@ -85,14 +255,14 @@ class TestAuthenticator(unittest.TestCase):
         a = Authenticator(h)
         res = a.log_on("", "secret")
         self.assertFalse(res.logged_on)
-        self.assertEqual(res.error, "missing_username")
+        self.assertEqual(res.error, "login_failed")
 
     def test_login_no_password(self) -> None:
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
         res = a.log_on("username", "")
         self.assertFalse(res.logged_on)
-        self.assertEqual(res.error, "missing_password")
+        self.assertEqual(res.error, "login_failed")
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
     def test_current_user(self) -> None:
@@ -263,7 +433,7 @@ class TestAuthenticator(unittest.TestCase):
             result = a.log_on("user@example.com", password=None)
         mock_log_on.assert_not_called()
         self.assertFalse(result.logged_on)
-        self.assertEqual(result.error, "missing_password")
+        self.assertEqual(result.error, "login_failed")
 
     def test_log_on_shows_dialog_on_handler_error(self) -> None:
         h = _MockAuthHandler("test.realm")
@@ -271,9 +441,10 @@ class TestAuthenticator(unittest.TestCase):
         with patch.object(h, "log_on",
                           return_value=AuthenticationResult("", error="bad creds")), \
              patch("resources.lib.authentication.authenticator.XbmcWrapper") as mock_wrapper:
+            mock_wrapper.show_key_board.return_value = None
             result = a.log_on("user@example.com", "secret")
         mock_wrapper.show_dialog.assert_called_once_with(None, "bad creds")
-        self.assertEqual(result.error, "bad creds")
+        self.assertEqual(result.error, "login_failed")
 
     def test_log_off_returns_early_when_not_logged_on(self) -> None:
         h = _MockAuthHandler("test.realm")
@@ -444,25 +615,25 @@ class TestAuthenticatorUnit(unittest.TestCase):
         MockVault.return_value.set_channel_setting.assert_called_once_with(
             "abc-123", "nlziet_password", "My Channel - Password")
 
-    def test_log_on_vault_returns_none_fails_without_login(self) -> None:
+    def test_log_on_vault_returns_none_falls_through_to_login_failed(self) -> None:
         h = _MockAuthHandler("test.realm")
         with patch("resources.lib.authentication.authenticator.Vault") as MockVault:
             MockVault.return_value.get_setting.return_value = None
             a = Authenticator(h, password_setting_id="my_setting")
             result = a.log_on("user")
         self.assertFalse(result.logged_on)
-        self.assertEqual(result.error, "missing_password")
+        self.assertEqual(result.error, "login_failed")
 
-    def test_log_on_channel_vault_returns_none_fails_without_login(self) -> None:
+    def test_log_on_channel_vault_returns_none_falls_through_to_login_failed(self) -> None:
         h = _MockAuthHandler("test.realm")
         with patch("resources.lib.authentication.authenticator.Vault") as MockVault:
             MockVault.return_value.get_channel_setting.return_value = None
             a = Authenticator(h, channel_guid="abc-123", password_setting_id="pw")
             result = a.log_on("user")
         self.assertFalse(result.logged_on)
-        self.assertEqual(result.error, "missing_password")
+        self.assertEqual(result.error, "login_failed")
 
-    def test_log_on_no_stored_username_returns_missing_username(self) -> None:
+    def test_log_on_no_stored_username_falls_through_to_login_failed(self) -> None:
         h = _MockAuthHandler("test.realm")
         with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings, \
              patch("resources.lib.authentication.authenticator.Vault") as MockVault:
@@ -472,9 +643,9 @@ class TestAuthenticatorUnit(unittest.TestCase):
                               password_setting_id="nlziet_password")
             result = a.log_on()
         self.assertFalse(result.logged_on)
-        self.assertEqual(result.error, "missing_username")
+        self.assertEqual(result.error, "login_failed")
 
-    def test_log_on_no_credentials_stored_returns_missing_credentials(self) -> None:
+    def test_log_on_no_credentials_stored_falls_through_to_login_failed(self) -> None:
         h = _MockAuthHandler("test.realm")
         with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings, \
              patch("resources.lib.authentication.authenticator.Vault") as MockVault:
@@ -484,7 +655,7 @@ class TestAuthenticatorUnit(unittest.TestCase):
                               password_setting_id="nlziet_password")
             result = a.log_on()
         self.assertFalse(result.logged_on)
-        self.assertEqual(result.error, "missing_credentials")
+        self.assertEqual(result.error, "login_failed")
 
     def test_auto_login_no_credentials_returns_missing_credentials(self) -> None:
         h = _MockAuthHandler("test.realm")
@@ -592,12 +763,15 @@ class TestAuthenticatorUnit(unittest.TestCase):
             a.log_on("user", "pass")
         mock_log_on.assert_not_called()
 
-    def test_session_error_passes_raw_message_to_dialog(self) -> None:
+    def test_session_error_does_not_show_dialog_for_non_network_errors(self) -> None:
+        """ Non-network session errors must not surface a raw error dialog to
+        the user; only the well-defined ``network_error`` case does.
+        """
         h = _MockAuthHandler("test.realm", session_error="some_other_error")
         with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog:
             a = Authenticator(h, channel_name="My Channel")
             a.log_on("user", "pass")
-        mock_dialog.assert_called_once_with("My Channel", "some_other_error")
+        mock_dialog.assert_not_called()
 
     def test_log_off_without_force_skips_handler_when_no_active_session(self) -> None:
         h = _MockAuthHandler("test.realm")
@@ -675,25 +849,327 @@ class TestAuthenticatorUnit(unittest.TestCase):
         mock_log_on.assert_called_once_with("user@example.com", "pass")
 
     def test_log_on_with_active_session_and_empty_username_logs_off(self) -> None:
-        """If an active session exists and the caller supplies an empty
-        username, the existing session is logged off and missing_credentials
-        is returned (no username and no password were supplied).
+        """ If an active session exists and the caller supplies an empty
+        username, the existing session is logged off. With no credentials and
+        no successful interactive fallback, login_failed is returned.
         """
         h = _MockAuthHandler("test.realm", active_user="user@example.com")
-        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+        with patch.object(h, "log_off", return_value=True) as mock_log_off, \
+             patch.object(Authenticator, "_manual_login",
+                          return_value=AuthenticationResult("", error="missing_username")) as mock_manual:
             a = Authenticator(h)
             result = a.log_on("")
 
         mock_log_off.assert_called_once_with("user@example.com")
+        mock_manual.assert_called_once()
         self.assertFalse(result.logged_on)
-        self.assertEqual(result.error, "missing_credentials")
+        self.assertEqual(result.error, "login_failed")
 
-    def test_resume_session_case_insensitive_match_returns_existing(self) -> None:
-        h = _MockAuthHandler("test.realm", active_user="User@Example.com")
+    def test_resume_session_evicts_when_no_username_configured(self) -> None:
+        """No configured username → active credential-flow session is evicted."""
+
+        h = _MockAuthHandler("test.realm", active_user="user@example.com")
+        with patch.object(h, "log_off", return_value=True) as mock_log_off, \
+             patch.object(Authenticator, "_manual_login",
+                          return_value=AuthenticationResult("", error="missing_username")), \
+             patch("resources.lib.authentication.authenticator.AddonSettings.get_setting",
+                   return_value=None):
+            a = Authenticator(h, username_setting_id="user")
+            result = a.log_on()
+
+        mock_log_off.assert_called_once_with("user@example.com")
+        self.assertFalse(result.logged_on)
+
+    def test_resume_session_evicts_on_username_mismatch_for_credential_flow(self) -> None:
+        """Credential flow + different active user → session is logged off."""
+
+        h = _MockAuthHandler("test.realm", active_user="other@example.com")
         with patch.object(h, "log_off", wraps=h.log_off) as mock_log_off, \
-             patch.object(h, "log_on", wraps=h.log_on) as mock_log_on:
+             patch.object(h, "log_on", wraps=h.log_on) as mock_log_on, \
+             patch("resources.lib.authentication.authenticator.Vault"):
+            a = Authenticator(h, password_setting_id="pw")
+            a.log_on("user@example.com")
+
+        mock_log_off.assert_called_once_with("other@example.com")
+        mock_log_on.assert_called_once()
+
+    def test_resume_session_accepts_device_flow_session_without_username_match(self) -> None:
+        """device_flow handler → active session resumed regardless of stored username."""
+
+        h = _MockDeviceFlowAuthHandler("test.realm", active_user="sub-guid-value")
+        with patch.object(h, "log_off") as mock_log_off, \
+             patch.object(h, "log_on") as mock_log_on:
             a = Authenticator(h)
-            result = a.log_on("user@example.com", "pass")
-        self.assertTrue(result.logged_on)
+            result = a.log_on("old-credential@example.com", "pass")
+
         mock_log_off.assert_not_called()
         mock_log_on.assert_not_called()
+        self.assertTrue(result.logged_on)
+        self.assertEqual(result.username, "sub-guid-value")
+
+    def test_device_manual_login_canceled_returns_canceled_error(self) -> None:
+        """CANCELED poll result → AuthenticationResult with error='canceled'."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h)
+        device_auth = self._make_device_auth_data()
+        with patch.object(h, "_start_device_authorization", return_value=device_auth), \
+             patch.object(a, "_poll_with_progress", return_value=DeviceAuthResult.CANCELED), \
+             patch("resources.lib.authentication.authenticator.xbmc.Monitor") as MockMonitor:
+            MockMonitor.return_value.abortRequested.return_value = False
+            result = a._device_manual_login()
+
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "canceled")
+
+    def test_device_manual_login_error_shows_dialog_and_returns_setup_failed(self) -> None:
+        """ERROR poll result → dialog shown + error='device_setup_failed'."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h, channel_name="My Channel")
+        device_auth = self._make_device_auth_data()
+        with patch.object(h, "_start_device_authorization", return_value=device_auth), \
+             patch.object(a, "_poll_with_progress", return_value=DeviceAuthResult.ERROR), \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog") as mock_dialog, \
+             patch("resources.lib.authentication.authenticator.xbmc.Monitor") as MockMonitor:
+            MockMonitor.return_value.abortRequested.return_value = False
+            result = a._device_manual_login()
+
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "device_setup_failed")
+        mock_dialog.assert_called_once()
+        self.assertEqual(mock_dialog.call_args[0][0], "My Channel")
+
+    def test_device_manual_login_start_returns_none_returns_setup_failed(self) -> None:
+        """_start_device_authorization returning None → device_setup_failed (no poll)."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h, channel_name="My Channel")
+        with patch.object(h, "_start_device_authorization", return_value=None), \
+             patch.object(a, "_poll_with_progress") as mock_poll, \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog"), \
+             patch("resources.lib.authentication.authenticator.xbmc.Monitor") as MockMonitor:
+            MockMonitor.return_value.abortRequested.return_value = False
+            result = a._device_manual_login()
+
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "device_setup_failed")
+        mock_poll.assert_not_called()
+
+    def test_device_manual_login_manual_success_returns_credential_result(self) -> None:
+        """MANUAL poll result + successful manual login → returns that result."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h)
+        device_auth = self._make_device_auth_data()
+        manual_result = AuthenticationResult("user@example.com")
+        with patch.object(h, "_start_device_authorization", return_value=device_auth), \
+             patch.object(a, "_poll_with_progress", return_value=DeviceAuthResult.MANUAL), \
+             patch.object(a, "_manual_login", return_value=manual_result) as mock_manual, \
+             patch("resources.lib.authentication.authenticator.xbmc.Monitor") as MockMonitor:
+            MockMonitor.return_value.abortRequested.return_value = False
+            result = a._device_manual_login("prefill@example.com")
+
+        self.assertIs(result, manual_result)
+        mock_manual.assert_called_once_with("prefill@example.com")
+
+    def test_device_manual_login_manual_network_error_propagates(self) -> None:
+        """MANUAL → network_error must propagate (not retry the device flow)."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h)
+        device_auth = self._make_device_auth_data()
+        net_err = AuthenticationResult("", error="network_error")
+        with patch.object(h, "_start_device_authorization", return_value=device_auth) as mock_start, \
+             patch.object(a, "_poll_with_progress", return_value=DeviceAuthResult.MANUAL), \
+             patch.object(a, "_manual_login", return_value=net_err), \
+             patch("resources.lib.authentication.authenticator.xbmc.Monitor") as MockMonitor:
+            MockMonitor.return_value.abortRequested.return_value = False
+            result = a._device_manual_login()
+
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "network_error")
+        # Must not have restarted the device flow loop.
+        self.assertEqual(mock_start.call_count, 1)
+
+    def test_device_manual_login_kodi_abort_returns_aborted(self) -> None:
+        """Kodi shutdown requested before first iteration → error='aborted'."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h)
+        with patch.object(h, "_start_device_authorization") as mock_start, \
+             patch("resources.lib.authentication.authenticator.xbmc.Monitor") as MockMonitor:
+            MockMonitor.return_value.abortRequested.return_value = True
+            result = a._device_manual_login()
+
+        self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "aborted")
+        mock_start.assert_not_called()
+
+    def test_device_manual_login_manual_failure_restarts_device_flow(self) -> None:
+        """MANUAL → manual_login fails non-network → loop restarts the device flow."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h)
+        device_auth = self._make_device_auth_data()
+        manual_fail = AuthenticationResult("", error="missing_username")
+        with patch.object(h, "_start_device_authorization", return_value=device_auth) as mock_start, \
+             patch.object(a, "_poll_with_progress", return_value=DeviceAuthResult.MANUAL), \
+             patch.object(a, "_manual_login", return_value=manual_fail), \
+             patch("resources.lib.authentication.authenticator.xbmc.Monitor") as MockMonitor:
+            MockMonitor.return_value.abortRequested.side_effect = [False, True]
+            result = a._device_manual_login()
+
+        self.assertEqual(result.error, "aborted")
+        self.assertEqual(mock_start.call_count, 1)
+
+    def test_device_manual_login_timeout_notifies_and_restarts(self) -> None:
+        """TIMEOUT → notification shown + loop restarts the device flow."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h, channel_name="My Channel")
+        device_auth = self._make_device_auth_data()
+        with patch.object(h, "_start_device_authorization", return_value=device_auth) as mock_start, \
+             patch.object(a, "_poll_with_progress", return_value=DeviceAuthResult.TIMEOUT), \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_notification") as mock_notify, \
+             patch("resources.lib.authentication.authenticator.xbmc.Monitor") as MockMonitor:
+            MockMonitor.return_value.abortRequested.side_effect = [False, True]
+            result = a._device_manual_login()
+
+        self.assertEqual(result.error, "aborted")
+        mock_notify.assert_called_once()
+        self.assertEqual(mock_notify.call_args[0][0], "My Channel")
+        self.assertEqual(mock_start.call_count, 1)
+
+    def test_log_on_dispatches_to_device_flow_when_handler_supports_it(self) -> None:
+        """Rung-3: handler supports device auth → calls _device_manual_login."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        expected = AuthenticationResult("user@example.com")
+        with patch.object(Authenticator, "_device_manual_login",
+                          return_value=expected) as mock_device, \
+             patch.object(Authenticator, "_manual_login") as mock_manual:
+            a = Authenticator(h)
+            result = a.log_on("user@example.com")
+
+        self.assertIs(result, expected)
+        mock_device.assert_called_once_with("user@example.com")
+        mock_manual.assert_not_called()
+
+    def test_log_on_third_rung_network_error_short_circuits(self) -> None:
+        """Rung-3 returning network_error must short-circuit (no login_failed)."""
+
+        h = _MockAuthHandler("test.realm", error="invalid_credentials")
+        net_err = AuthenticationResult("", error="network_error")
+        with patch.object(Authenticator, "_manual_login", return_value=net_err), \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog"):
+            a = Authenticator(h)
+            result = a.log_on("user@example.com", "pass")
+
+        self.assertEqual(result.error, "network_error")
+
+    def _make_device_auth_data(self) -> DeviceAuthData:
+        return DeviceAuthData(
+            device_code="test-device-code",
+            user_code="TEST-1234",
+            verification_uri="https://example.com/activate",
+            expires_in=300,
+            interval=5,
+        )
+
+    def _make_fake_dialog(self,
+                          terminal_result: Optional[DeviceAuthResult]) -> MagicMock:
+        """A DeviceAuthDialog test double driven by a real Event."""
+
+        dialog = MagicMock()
+        dialog.stop_event = threading.Event()
+        dialog._closed_with = None
+
+        def _close_with(result: DeviceAuthResult) -> None:
+            dialog._closed_with = result
+            dialog.stop_event.set()
+
+        def _do_modal() -> None:
+            if terminal_result is not None and dialog._closed_with is None:
+                _close_with(terminal_result)
+            dialog.stop_event.wait(timeout=1.0)
+
+        dialog.close_with.side_effect = _close_with
+        dialog.doModal.side_effect = _do_modal
+        type(dialog).result = property(  # type: ignore[misc]
+            lambda self: self._closed_with)
+        return dialog
+
+    def test_poll_with_progress_returns_terminal_poll_result(self) -> None:
+        """Worker sees non-PENDING poll → close_with(result), property returns it."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h)
+        device_auth = self._make_device_auth_data()
+        dialog = self._make_fake_dialog(terminal_result=None)
+        with patch("resources.lib.authentication.authenticator.DeviceAuthDialog",
+                   return_value=dialog), \
+             patch("resources.lib.authentication.authenticator._DEVICE_FLOW_REFRESH_INTERVAL", 0.0), \
+             patch.object(h, "_poll_device_authorization",
+                          return_value=DeviceAuthResult.SUCCESS):
+            monitor = MagicMock()
+            monitor.abortRequested.return_value = False
+            result = a._poll_with_progress(device_auth, monitor)
+
+        self.assertEqual(result, DeviceAuthResult.SUCCESS)
+        dialog.update_progress.assert_called()
+
+    def test_poll_with_progress_returns_canceled_on_kodi_abort(self) -> None:
+        """Worker observes monitor.abortRequested → close_with(CANCELED)."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h)
+        device_auth = self._make_device_auth_data()
+        dialog = self._make_fake_dialog(terminal_result=None)
+        with patch("resources.lib.authentication.authenticator.DeviceAuthDialog",
+                   return_value=dialog), \
+             patch("resources.lib.authentication.authenticator._DEVICE_FLOW_REFRESH_INTERVAL", 0.0), \
+             patch.object(h, "_poll_device_authorization") as mock_poll:
+            monitor = MagicMock()
+            monitor.abortRequested.return_value = True
+            result = a._poll_with_progress(device_auth, monitor)
+
+        self.assertEqual(result, DeviceAuthResult.CANCELED)
+        mock_poll.assert_not_called()
+
+    def test_poll_with_progress_returns_manual_when_dialog_button_pressed(self) -> None:
+        """User clicks 'Login manually' → dialog closes with MANUAL; no thread join wait."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h)
+        device_auth = self._make_device_auth_data()
+        dialog = self._make_fake_dialog(terminal_result=DeviceAuthResult.MANUAL)
+        with patch("resources.lib.authentication.authenticator.DeviceAuthDialog",
+                   return_value=dialog), \
+             patch("resources.lib.authentication.authenticator._DEVICE_FLOW_REFRESH_INTERVAL", 0.0), \
+             patch.object(h, "_poll_device_authorization",
+                          return_value=DeviceAuthResult.PENDING):
+            monitor = MagicMock()
+            monitor.abortRequested.return_value = False
+            result = a._poll_with_progress(device_auth, monitor)
+
+        self.assertEqual(result, DeviceAuthResult.MANUAL)
+
+    def test_poll_with_progress_returns_error_when_dialog_has_no_result(self) -> None:
+        """Dialog closes without recording a result → ERROR (defensive fallback)."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        a = Authenticator(h)
+        device_auth = self._make_device_auth_data()
+        dialog = MagicMock()
+        dialog.stop_event = threading.Event()
+        dialog.stop_event.set()  # worker exits immediately
+        type(dialog).result = property(lambda self: None)  # type: ignore[misc]
+        with patch("resources.lib.authentication.authenticator.DeviceAuthDialog",
+                   return_value=dialog), \
+             patch("resources.lib.authentication.authenticator._DEVICE_FLOW_REFRESH_INTERVAL", 0.0):
+            monitor = MagicMock()
+            monitor.abortRequested.return_value = False
+            result = a._poll_with_progress(device_auth, monitor)
+
+        self.assertEqual(result, DeviceAuthResult.ERROR)

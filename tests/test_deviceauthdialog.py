@@ -199,6 +199,15 @@ class TestUpdateProgress(unittest.TestCase):
         self.assertEqual(self.dlg.getControl(XML_ID_PROGRESS).color_diffuse, "FFFF0000")
 
 
+    def test_progress_bar_color_interpolated_in_warn_zone(self) -> None:
+        import time as _time
+        # 255 s elapsed of 300 → 15 % remaining, between danger (5 %) and warn (25 %)
+        # t = (15 - 5) / (25 - 5) = 0.5  →  g = b = int(255 * 0.5) = 127 = 0x7F
+        self.dlg._start_time = _time.time() - 255
+        self.dlg.update_progress()
+        self.assertEqual(self.dlg.getControl(XML_ID_PROGRESS).color_diffuse, "FFFF7F7F")
+
+
 class TestOnClick(unittest.TestCase):
 
 
@@ -460,6 +469,26 @@ class TestQrCodeGeneration(unittest.TestCase):
                 self.assertEqual(dlg._qr_path, "/tmp/qr_test.png")
                 mock_qrcode.make.assert_called_with("https://example.com/qr")
                 mock_image.save.assert_called_with("/tmp/qr_test.png")
+
+
+    def test_qr_generation_exception_falls_back_gracefully(self) -> None:
+        """Non-ImportError from qrcode.make() is caught; _qr_path stays None."""
+
+        mock_qrcode = MagicMock()
+        mock_qrcode.make.side_effect = IOError("disk full")
+
+        with patch.dict(sys.modules, {"qrcode": mock_qrcode}):
+            with patch("os.makedirs"), \
+                 patch("tempfile.mkstemp", return_value=(123, "/tmp/qr_test.png")), \
+                 patch("os.close"):
+                dlg = DeviceAuthDialog(
+                    title="T", visit_text="V", visit_url="U",
+                    code_text="C", code="123", timeout=300,
+                    qr_url="https://example.com/qr"
+                )
+
+        self.assertIsNone(dlg._qr_path)
+        self.assertIsNotNone(dlg._qr_url)
 
 
     def test_logo_path_default(self) -> None:

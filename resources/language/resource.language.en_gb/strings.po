@@ -1333,3 +1333,15 @@ msgstr ""
 msgctxt "#30619"
 msgid "Log off incomplete. Local credentials cleared, but the server could not be notified."
 msgstr ""
+
+msgctxt "#30620"
+msgid "Connection error. Please check your internet connection."
+msgstr ""
+
+msgctxt "#30621"
+msgid "Code expired, restarting…"
+msgstr ""
+
+msgctxt "#30622"
+msgid "Device setup failed. Please try again."
+msgstr ""

@@ -1,10 +1,42 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Any, Mapping, Optional, final
 
 from resources.lib.addonsettings import AddonSettings
 from resources.lib.addonsettings import LOCAL
 from resources.lib.authentication.authenticationresult import AuthenticationResult
+
+
+@dataclass
+class DeviceAuthData:
+    """
+    Device flow response returned by
+    :meth:`AuthenticationHandler._start_device_authorization`.
+
+    Construction validates the contract; consumers may use fields directly.
+    """
+
+    device_code: str
+    user_code: str
+    verification_uri: str
+    expires_in: int
+    interval: int
+    qr_url: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.device_code, str) or not self.device_code:
+            raise ValueError("device_code must be a non-empty string")
+        if not isinstance(self.user_code, str) or not self.user_code:
+            raise ValueError("user_code must be a non-empty string")
+        if not isinstance(self.verification_uri, str) or not self.verification_uri:
+            raise ValueError("verification_uri must be a non-empty string")
+        if not isinstance(self.expires_in, int) or self.expires_in <= 0:
+            raise ValueError("expires_in must be a positive int")
+        if not isinstance(self.interval, int) or self.interval <= 0:
+            raise ValueError("interval must be a positive int")
+        if self.qr_url is not None and (not isinstance(self.qr_url, str) or not self.qr_url):
+            raise ValueError("qr_url must be a non-empty string when provided")
 
 
 class DeviceAuthResult(Enum):
@@ -69,6 +101,119 @@ class AuthenticationHandler(object):
         """
 
         raise NotImplementedError
+
+    def _revoke_device_authorization(self, username: str) -> bool:
+        """
+        Called by :class:`Authenticator` to revoke a device flow session.
+
+        Override to revoke device tokens and perform any provider-specific
+        cleanup (such as deregistering the device from the user's account).
+        Called while authentication tokens are still available, after
+        :meth:`log_off` has run.
+
+        Only called for device flow logins; credential logins use
+        :meth:`_credential_log_off` instead.
+        The default implementation is a no-op returning ``True``.
+
+        :param username: The account username.
+
+        :returns: ``True`` on success, ``False`` on failure.
+
+        """
+
+        return True
+
+    @final
+    @property
+    def supports_device_authorization(self) -> bool:
+        """ Whether this handler supports device authorization flow (RFC 8628).
+
+        Derived automatically: True if the subclass overrides both
+        _start_device_authorization and _poll_device_authorization, False otherwise.
+
+        :return: True if the handler supports the full device authorization flow.
+        :rtype: bool
+        """
+
+        return (type(self)._start_device_authorization
+                is not AuthenticationHandler._start_device_authorization
+                and type(self)._poll_device_authorization
+                is not AuthenticationHandler._poll_device_authorization)
+
+    @property
+    def device_flow(self) -> bool:
+        """
+        Whether the handler is currently operating in device authorization flow.
+
+        :return: ``True`` if device flow is active, ``False`` otherwise.
+        """
+
+        return False
+
+    def _start_device_authorization(self, device_name: str) -> Optional[DeviceAuthData]:
+        """ Start an interactive authentication session.
+
+        :param device_name: A human-readable name for this device.
+
+        :returns: A :class:`DeviceAuthData` dict, or None on failure.
+
+        """
+
+        raise NotImplementedError
+
+    def _poll_device_authorization(self, device_code: str) -> DeviceAuthResult:
+        """ Poll the status of an interactive authentication session.
+
+        :param device_code: The device code returned by _start_device_authorization().
+
+        :returns: One of ``PENDING``, ``SUCCESS``, ``TIMEOUT``, or ``ERROR``.
+
+        """
+
+        raise NotImplementedError
+
+    @staticmethod
+    def _parse_device_auth_data(auth_data: Mapping[str, Any]) -> Optional[DeviceAuthData]:
+        """ Normalize a device authorization response into ``DeviceAuthData``.
+
+        :param auth_data: Raw response mapping from the auth provider.
+
+        :returns: A normalized ``DeviceAuthData`` dict, or ``None`` when
+                  required fields are missing.
+
+        """
+
+        if ("device_code" not in auth_data or
+            not auth_data["device_code"]):
+            return None
+
+        if ("user_code" not in auth_data or
+            not auth_data["user_code"]):
+            return None
+
+        if ("verification_uri" not in auth_data or
+            not auth_data["verification_uri"]):
+            return None
+
+        if ("expires_in" not in auth_data or
+            auth_data["expires_in"] is None):
+            return None
+
+        if ("interval" not in auth_data or
+            auth_data["interval"] is None):
+            return None
+
+        try:
+            return DeviceAuthData(
+                device_code=auth_data["device_code"],
+                user_code=auth_data["user_code"],
+                verification_uri=auth_data["verification_uri"],
+                expires_in=auth_data["expires_in"],
+                interval=auth_data["interval"],
+                qr_url=auth_data.get("qr_url") or None,
+            )
+        except (TypeError, ValueError):
+            return None
 
     def get_authentication_token(self) -> Optional[str]:
         """ Returns a token that can be used for authentication of the current session.
