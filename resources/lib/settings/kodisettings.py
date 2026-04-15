@@ -16,10 +16,11 @@ class KodiSettings(settingsstore.SettingsStore):
         setting_value = str(setting_value)
 
         if channel:
-            channel_setting_id = self.__channel_setting_format.format(channel.guid, setting_id)
+            channel_setting_id = self.__channel_setting_format.format(
+                self._channel_guid(channel), setting_id)
             self.__addon_settings.setSetting(channel_setting_id, str(setting_value))
             self._logger.trace("Kodi Channel Setting Updated: %s.%s(%s)='%s'",
-                               channel.id, setting_id, channel_setting_id,
+                               self._channel_id(channel), setting_id, channel_setting_id,
                                self._get_safe_print_value(setting_id, setting_value))
         else:
             self.__addon_settings.setSetting(setting_id, str(setting_value))
@@ -44,10 +45,11 @@ class KodiSettings(settingsstore.SettingsStore):
 
     def get_setting(self, setting_id, channel=None, default=None):
         if channel:
-            channel_setting_id = self.__channel_setting_format.format(channel.guid, setting_id)
+            channel_setting_id = self.__channel_setting_format.format(
+                self._channel_guid(channel), setting_id)
             setting_value = self.__addon_settings.getSetting(channel_setting_id)
             self._logger.trace("Kodi Channel Setting: %s.%s(%s)='%s'",
-                               channel.id, setting_id, channel_setting_id,
+                               self._channel_id(channel), setting_id, channel_setting_id,
                                self._get_safe_print_value(setting_id, setting_value))
         else:
             setting_value = self.__addon_settings.getSetting(setting_id)
