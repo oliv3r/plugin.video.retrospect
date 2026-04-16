@@ -12,7 +12,7 @@ class Authenticator(object):
     def __init__(self, handler: AuthenticationHandler):
         """ Main logic handler for authentication.
 
-        :param AuthenticationHandler handler:   The authentication handler to use.
+        :param handler:             The authentication handler to use.
 
         """
 
@@ -24,7 +24,9 @@ class Authenticator(object):
 
         self.__handler = handler
 
-    def log_on(self, username: str, password: Optional[str] = None, setting_id: Optional[str] = None, channel_guid: Optional[str] = None):
+    def log_on(self, username: str, password: Optional[str] = None,
+               setting_id: Optional[str] = None,
+               channel_guid: Optional[str] = None) -> AuthenticationResult:
         """ Performs the logon of a user. Either with the specified password or via a lookup. Also
         logs off a previous user if the username has changed from previous logins.
 
@@ -77,7 +79,6 @@ class Authenticator(object):
         """ Check if the user with the given name is currently authenticated.
 
         :returns: a AuthenticationResult with the account data
-        :rtype: AuthenticationResult
 
         """
 
@@ -92,21 +93,21 @@ class Authenticator(object):
 
         return self.__handler.get_authentication_token()
 
-    def log_off(self, username, force=True):
+    def log_off(self, username: str, force: bool = True) -> None:
         """ Logs off the currently authenticated user, clearing stored tokens.
 
-        :param str username:    The username to log off.
-        :param bool force:      If True, log off regardless of whether the stored
-                                username matches the given one.
+        :param username:   The username to log off.
+        :param force:      If True, log off regardless of whether the stored
+                           username matches the given one.
 
         """
 
-        result = self.__handler.active_authentication()
-        if not result.logged_on:
+        auth_result = self.__handler.active_authentication()
+        if not auth_result.logged_on:
             Logger.debug("User was not logged on.")
             return
 
-        logged_on_user = result.username
+        logged_on_user = auth_result.username
         if logged_on_user is not None and (force or logged_on_user == username):
             result = self.__handler.log_off(logged_on_user)
             if result:

@@ -23,7 +23,7 @@ class AuthenticationHandler(object):
         return
 
     @property
-    def realm(self):
+    def realm(self) -> str:
         return self._realm
 
     def log_on(self, username: str, password: str) -> AuthenticationResult:
@@ -47,10 +47,10 @@ class AuthenticationHandler(object):
 
         raise NotImplementedError
 
-    def log_off(self, username) -> bool:
+    def log_off(self, username: str) -> bool:
         """ Check if the user with the given name is currently authenticated.
 
-        :param str username:    The username to log off
+        :param username:    The username to log off
 
         :returns: Indication of success
 
@@ -69,7 +69,7 @@ class AuthenticationHandler(object):
 
         raise NotImplementedError
 
-    def _store_current_user_in_settings(self, username: str):
+    def _store_current_user_in_settings(self, username: str) -> None:
         """ Store the current user in the local settings.
 
         :param username: The currently authenticated user
