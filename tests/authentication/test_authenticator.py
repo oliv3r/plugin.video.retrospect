@@ -36,52 +36,52 @@ class _MockAuthHandler(AuthenticationHandler):
 
 class TestAuthenticator(unittest.TestCase):
     # noinspection PyPep8Naming
-    def __init__(self, methodName):  # NOSONAR
+    def __init__(self, methodName: str) -> None:  # NOSONAR
         super(TestAuthenticator, self).__init__(methodName)
 
-        self.user_name = os.environ.get("RTLXL_USERNAME")
-        self.password = os.environ.get("RTLXL_PASSWORD")
-        self.device_id = binascii.hexlify(os.urandom(16)).decode()
-        self.rtl_api_key = "3_R0XjstXd4MpkuqdK3kKxX20icLSE3FB27yQKl4zQVjVpqmgSyRCPKKLGdn5kjoKq"
+        self.user_name: Optional[str] = os.environ.get("RTLXL_USERNAME")
+        self.password: Optional[str] = os.environ.get("RTLXL_PASSWORD")
+        self.device_id: str = binascii.hexlify(os.urandom(16)).decode()
+        self.rtl_api_key: str = "3_R0XjstXd4MpkuqdK3kKxX20icLSE3FB27yQKl4zQVjVpqmgSyRCPKKLGdn5kjoKq"
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         Logger.create_logger(None, str(cls), min_log_level=0)
         UriHandler.create_uri_handler(ignore_ssl_errors=False)
 
     @classmethod
-    def tearDownClass(cls):
+    def tearDownClass(cls) -> None:
         Logger.instance().close_log()
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         pass
 
-    def setUp(self):
+    def setUp(self) -> None:
         UriHandler.delete_cookie(domain=".sso.rtl.nl")
 
-    def test_init_authenticator_no_handler(self):
+    def test_init_authenticator_no_handler(self) -> None:
         with self.assertRaises(ValueError):
             # noinspection PyTypeChecker
-            Authenticator(None)
+            Authenticator(None)  # type: ignore[arg-type]
 
-    def test_init_authenticator_incorrect_type(self):
+    def test_init_authenticator_incorrect_type(self) -> None:
         with self.assertRaises(ValueError):
             # noinspection PyTypeChecker
-            Authenticator("handler")
+            Authenticator("handler")  # type: ignore[arg-type]
 
-    def test_init_authenticator(self):
+    def test_init_authenticator(self) -> None:
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
         self.assertIsNotNone(a)
 
-    def test_login_no_username(self):
+    def test_login_no_username(self) -> None:
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
         res = a.log_on("", "secret")
         self.assertFalse(res.logged_on)
         self.assertEqual(res.error, "missing_username")
 
-    def test_login_no_password(self):
+    def test_login_no_password(self) -> None:
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
         res = a.log_on("username", "")
@@ -89,7 +89,7 @@ class TestAuthenticator(unittest.TestCase):
         self.assertEqual(res.error, "missing_password")
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
-    def test_current_user(self):
+    def test_current_user(self) -> None:
         assert self.user_name is not None and self.password is not None
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
@@ -99,7 +99,7 @@ class TestAuthenticator(unittest.TestCase):
         self.assertEqual(h_user.username, a_user.username)
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
-    def test_log_on(self):
+    def test_log_on(self) -> None:
         assert self.user_name is not None and self.password is not None
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
@@ -107,7 +107,7 @@ class TestAuthenticator(unittest.TestCase):
         self.assertTrue(res.logged_on)
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
-    def test_log_on_twice(self):
+    def test_log_on_twice(self) -> None:
         assert self.user_name is not None and self.password is not None
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
@@ -118,7 +118,7 @@ class TestAuthenticator(unittest.TestCase):
         self.assertTrue(res.existing_login)
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
-    def test_log_off(self):
+    def test_log_off(self) -> None:
         assert self.user_name is not None and self.password is not None
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
@@ -128,7 +128,7 @@ class TestAuthenticator(unittest.TestCase):
         self.assertFalse(a.active_authentication().logged_on)
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
-    def test_log_on_without_log_off(self):
+    def test_log_on_without_log_off(self) -> None:
         assert self.user_name is not None and self.password is not None
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
@@ -139,21 +139,21 @@ class TestAuthenticator(unittest.TestCase):
         self.assertTrue(res.logged_on)
         self.assertEqual(user_name, a.active_authentication().username)
 
-    def test_safe_log_masks_odd_indices(self):
+    def test_safe_log_masks_odd_indices(self) -> None:
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
-        self.assertEqual(a._Authenticator__safe_log("user@example.com"),
+        self.assertEqual(a._Authenticator__safe_log("user@example.com"),  # type: ignore[attr-defined]
                          "u*e*@*x*m*l*.*o*")
 
-    def test_safe_log_passes_none_through(self):
+    def test_safe_log_passes_none_through(self) -> None:
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
-        self.assertIsNone(a._Authenticator__safe_log(None))
+        self.assertIsNone(a._Authenticator__safe_log(None))  # type: ignore[attr-defined]
 
-    def test_safe_log_collapses_empty_string_to_none(self):
+    def test_safe_log_collapses_empty_string_to_none(self) -> None:
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
-        self.assertIsNone(a._Authenticator__safe_log(""))
+        self.assertIsNone(a._Authenticator__safe_log(""))  # type: ignore[attr-defined]
 
     def test_empty_realm_raises_value_error(self) -> None:
         with self.assertRaises(ValueError):
