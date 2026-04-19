@@ -12,6 +12,10 @@ from ..logger import Logger
 from ..vault import Vault
 from ..xbmcwrapper import XbmcWrapper
 
+_AUTH_METHOD_CREDENTIALS = "credential_auth" # username/password login
+_AUTH_METHOD_DEVICE = "device_auth"          # device flow with code login
+_AUTH_SETTING_KEY = "authentication_method"  # addon-settings key for persisted auth method
+
 _DEVICE_FLOW_REFRESH_INTERVAL = 0.5        # seconds between UI refresh ticks during device flow
 _DEVICE_FLOW_STOP_TIMEOUT = 2.0            # seconds to wait for poll thread after dialog closes
 _DEVICE_FLOW_NOTIFICATION_TIMEOUT = 30000  # milliseconds to show the notification to the user
@@ -189,7 +193,9 @@ class Authenticator(object):
                 Logger.debug("Device authorization poll result: %r", result)
 
             if result == DeviceAuthResult.SUCCESS:
-                return self.__handler.active_authentication()
+                auth_result = self.__handler.active_authentication()
+                self._set_auth_method(_AUTH_METHOD_DEVICE)
+                return auth_result
             if result == DeviceAuthResult.MANUAL:
                 auth_result = self._manual_login(username)
                 if auth_result.logged_on or auth_result.error == "network_error":
@@ -304,6 +310,7 @@ class Authenticator(object):
         Logger.debug("Headless login for: %s", self.__safe_log(username))
         result = self.__handler.log_on(username, password)
         if result.logged_on:
+            self._set_auth_method(_AUTH_METHOD_CREDENTIALS)
             return result
 
         Logger.debug("Headless login failed for %s: %s", self.__safe_log(username), result.error)
@@ -351,6 +358,11 @@ class Authenticator(object):
         logged_on_user = auth_result.username
         if logged_on_user is not None and (force or logged_on_user == username):
             result = self.__handler.log_off(logged_on_user)
+            if not result:
+                Logger.warning("Log off pre-hook failed")
+
+        if self.device_flow:
+            result = self.__handler._revoke_device_authorization(logged_on_user)
             if result:
                 Logger.debug("Logged off successfully")
             else:
@@ -358,6 +370,8 @@ class Authenticator(object):
                 XbmcWrapper.show_notification(
                     self.__channel_name, LanguageHelper.LogOffError,
                     notification_type=XbmcWrapper.Warning)
+
+        self._clear_auth_method()
 
     def _get_username(self) -> Optional[str]:
         """ Read the stored username.
@@ -433,6 +447,44 @@ class Authenticator(object):
             Vault().set_setting(self.__password_setting_id, heading)
 
         return self._get_password()
+
+    @property
+    def device_flow(self) -> bool:
+        """ Whether the last successful login used the device authorization flow. """
+
+        return self._get_auth_method() == _AUTH_METHOD_DEVICE
+
+    def _get_auth_method(self) -> Optional[str]:
+        """ Read the stored authentication method.
+
+        :returns: The stored authentication method, or None if not set.
+
+        """
+
+        if self.__channel_guid:
+            return AddonSettings.get_channel_setting(self.__channel_guid,
+                                                     _AUTH_SETTING_KEY,
+                                                     store=LOCAL)
+        else:
+            return AddonSettings.get_setting(_AUTH_SETTING_KEY, store=LOCAL)
+
+    def _set_auth_method(self, method: str) -> None:
+        """ Persist the authentication method used for the current session.
+
+        :param method:  ``_AUTH_METHOD_CREDENTIALS`` or ``_AUTH_METHOD_DEVICE``.
+
+        """
+
+        if self.__channel_guid:
+            AddonSettings.set_channel_setting(self.__channel_guid, _AUTH_SETTING_KEY, method,
+                                              store=LOCAL)
+        else:
+            AddonSettings.set_setting(_AUTH_SETTING_KEY, method, store=LOCAL)
+
+    def _clear_auth_method(self) -> None:
+        """ Clear the stored authentication method (e.g. on log-off). """
+
+        self._set_auth_method("")
 
     def __safe_log(self, text: Optional[str]) -> Optional[str]:
         """ Obfuscate a string for logging by masking every odd-positioned character.

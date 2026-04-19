@@ -4,7 +4,7 @@ import binascii
 import os
 import threading
 import unittest
-from typing import Optional, cast
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 from resources.lib.authentication.authenticationhandler import (
@@ -12,7 +12,12 @@ from resources.lib.authentication.authenticationhandler import (
 )
 from resources.lib.authentication.authenticationresult import AuthenticationResult
 from resources.lib.authentication.rtlxlhandler import RtlXlHandler
-from resources.lib.authentication.authenticator import Authenticator
+from resources.lib.authentication.authenticator import (
+    Authenticator,
+    _AUTH_METHOD_CREDENTIALS,
+    _AUTH_METHOD_DEVICE,
+    _AUTH_SETTING_KEY,
+)
 from resources.lib.addonsettings import LOCAL
 from resources.lib.helpers.languagehelper import LanguageHelper
 from resources.lib.logger import Logger
@@ -807,11 +812,13 @@ class TestAuthenticatorUnit(unittest.TestCase):
             a = Authenticator(h)
             a.log_off("user@example.com")  # should not raise
 
-    def test_log_off_handler_failure_shows_notification(self) -> None:
-        h = _MockAuthHandler("test.realm", active_user="user@example.com")
-        with patch.object(h, "log_off", return_value=False), \
+    def test_log_off_device_flow_revocation_failure_shows_notification(self) -> None:
+        h = _MockDeviceAuthHandler("test.realm", active_user="user@example.com")
+        with patch.object(h, "_revoke_device_authorization", return_value=False), \
              patch("resources.lib.authentication.authenticator.XbmcWrapper.show_notification") \
-                as mock_notify:
+                as mock_notify, \
+             patch("resources.lib.authentication.authenticator.Authenticator.device_flow",
+                   new_callable=lambda: property(lambda self: True)):
             a = Authenticator(h, channel_name="My Channel")
             a.log_off("user@example.com")
         mock_notify.assert_called_once()
@@ -1173,3 +1180,92 @@ class TestAuthenticatorUnit(unittest.TestCase):
             result = a._poll_with_progress(device_auth, monitor)
 
         self.assertEqual(result, DeviceAuthResult.ERROR)
+
+
+
+    def test_log_on_device_auth_success_returns_logged_on(self) -> None:
+        """Credential failure + device flow success → logged_on True."""
+        h = _MockDeviceAuthHandler("test.realm", error="invalid_credentials")
+        a = Authenticator(h)
+        with patch.object(Authenticator, "_device_manual_login",
+                          return_value=AuthenticationResult("user")), \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog"):
+            result = a.log_on("user", "pass")
+        self.assertTrue(result.logged_on)
+
+    def test_credential_log_on_sets_credential_log_on_method(self) -> None:
+        """Successful credential login stores credential login method."""
+        h = _MockAuthHandler("test.realm")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch.object(a, "_set_auth_method") as mock_set:
+            a.log_on("user", "pass")
+        mock_set.assert_called_once_with(_AUTH_METHOD_CREDENTIALS)
+
+    def test_device_login_sets_device_login_method(self) -> None:
+        """Successful device flow login stores device login method."""
+        h = _MockDeviceAuthHandler("test.realm", error="invalid_credentials")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch.object(Authenticator, "_device_manual_login",
+                          return_value=AuthenticationResult("user")), \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog"), \
+             patch.object(a, "_set_auth_method") as mock_set:
+            a.log_on("user", "pass")
+        mock_set.assert_not_called()  # setter lives inside _device_manual_login
+
+    def test_set_auth_method_with_channel_guid_uses_channel_setting(self) -> None:
+        """With a channel_guid, _set_auth_method writes to the channel-scoped setting."""
+        h = _MockAuthHandler("test.realm")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings:
+            a._set_auth_method(_AUTH_METHOD_CREDENTIALS)
+        MockSettings.set_channel_setting.assert_called_once_with(
+            "test-guid", _AUTH_SETTING_KEY, _AUTH_METHOD_CREDENTIALS, store=LOCAL)
+        MockSettings.set_setting.assert_not_called()
+
+    def test_set_auth_method_without_channel_guid_uses_global_setting(self) -> None:
+        """Without a channel_guid, _set_auth_method writes to the global setting."""
+        h = _MockAuthHandler("test.realm")
+        a = Authenticator(h)
+        with patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings:
+            a._set_auth_method(_AUTH_METHOD_DEVICE)
+        MockSettings.set_setting.assert_called_once_with(
+            _AUTH_SETTING_KEY, _AUTH_METHOD_DEVICE, store=LOCAL)
+        MockSettings.set_channel_setting.assert_not_called()
+
+    def test_headless_login_success_sets_credential_method(self) -> None:
+        """_headless_login sets credential login method on success."""
+        h = _MockAuthHandler("test.realm")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch.object(a, "_set_auth_method") as mock_set:
+            a._headless_login("user", "pass")
+        mock_set.assert_called_once_with(_AUTH_METHOD_CREDENTIALS)
+
+    def test_headless_login_failure_does_not_set_credential_method(self) -> None:
+        """_headless_login does not set login method on failure."""
+        h = _MockAuthHandler("test.realm", error="invalid_credentials")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch.object(a, "_set_auth_method") as mock_set:
+            a._headless_login("user", "wrong")
+        mock_set.assert_not_called()
+
+    def test_log_off_clears_login_method(self) -> None:
+        """log_off clears the stored login method."""
+        h = _MockAuthHandler("test.realm", active_user="user")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch.object(a, "_clear_auth_method") as mock_clear:
+            a.log_off("user")
+        mock_clear.assert_called_once_with()
+
+    def test_device_flow_false_after_credential_log_on(self) -> None:
+        """device_flow is False when login method is credential."""
+        h = _MockAuthHandler("test.realm")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch.object(a, "_get_auth_method", return_value=_AUTH_METHOD_CREDENTIALS):
+            self.assertFalse(a.device_flow)
+
+    def test_device_flow_true_after_device_login(self) -> None:
+        """device_flow is True when login method is device_flow."""
+        h = _MockAuthHandler("test.realm")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch.object(a, "_get_auth_method", return_value=_AUTH_METHOD_DEVICE):
+            self.assertTrue(a.device_flow)
