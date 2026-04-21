@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+from http import HTTPStatus
 import json
 import re
 import secrets
@@ -53,10 +54,14 @@ except ImportError:
         jwt = _JwtFallback()  # type: ignore[assignment]
 
 from resources.lib.addonsettings import AddonSettings, LOCAL
-from resources.lib.authentication.authenticationhandler import AuthenticationHandler
+from resources.lib.authentication.authenticationhandler import AuthenticationHandler, DeviceAuthResult
 from resources.lib.urihandler import UriHandler
 from resources.lib.helpers.jsonhelper import JsonHelper
 from resources.lib.logger import Logger
+
+# Device flow defaults (RFC 8628 §3.2)
+DEVICE_FLOW_INTERVAL = 5           # seconds between poll attempts
+DEVICE_FLOW_EXPIRES_IN = 900       # seconds until the device code expires
 
 # Device flow defaults (RFC 8628 §3.2)
 DEVICE_FLOW_INTERVAL = 5           # seconds between poll attempts
@@ -85,6 +90,13 @@ class OAuth2Handler(AuthenticationHandler, ABC):
     _client_id: Optional[str]
     """OAuth2 client identifier; set at construction, may be updated by subclasses."""
 
+    # Device flow state — per-instance, reset in __init__ (RFC 8628 §3.5)
+    _poll_interval: float = float(DEVICE_FLOW_INTERVAL)
+    """Seconds between polls; increased by ``slow_down`` responses."""
+    _next_poll_at: float = 0.0
+    """Earliest epoch time at which the next poll is permitted."""
+
+
     def __init__(self, realm: str, client_id: str,
                  headers: Optional[dict] = None) -> None:
         """
@@ -98,6 +110,8 @@ class OAuth2Handler(AuthenticationHandler, ABC):
         self._access_token = ""
         self._access_token_expires_at = 0
         self._client_id: Optional[str] = client_id
+        self._next_poll_at = 0.0
+        self._poll_interval = float(DEVICE_FLOW_INTERVAL)
         self._refresh_token = ""
 
         super().__init__(realm, device_id=None, headers=headers)
@@ -114,6 +128,18 @@ class OAuth2Handler(AuthenticationHandler, ABC):
         """
 
         pass
+
+
+    @property
+    def device_authorization_endpoint(self) -> Optional[str]:
+        """
+        Device authorization endpoint URL (RFC 8628).
+
+        :return: - The URL string.
+                 - ``None`` if not supported.
+        """
+
+        return None
 
 
     @property
@@ -551,3 +577,193 @@ class OAuth2Handler(AuthenticationHandler, ABC):
             return {"Authorization": f"Bearer {bearer_token}"}
 
         return {}
+
+
+    # -- Device authorization ----------------------------------------------
+
+    @property
+    def _device_flow(self) -> bool:
+        """
+        Whether this handler is currently operating in RFC 8628 device flow.
+
+        Override in subclasses to derive the flag from handler-specific state.
+        Returns ``False`` by default so that standard OAuth2 handlers never
+        enter device-flow-only code paths.
+
+        :return: ``True`` if device flow is active, ``False`` otherwise.
+        """
+
+        return False
+
+
+    def _device_access_token_granted(self, tokens: dict) -> None:
+        """
+        Called after a successful device flow token exchange (RFC 8628, §3.4).
+
+        Override in subclasses to perform post-authentication setup
+        (e.g. storing a client ID or device session key from the token claims).
+
+        :param tokens: The parsed token response dict from the server.
+        """
+
+        pass
+
+
+    def _device_request_headers(self) -> dict:
+        """
+        Return HTTP headers for device flow requests (RFC 8628, §3.4).
+
+        Override in subclasses to supply custom headers.
+        The return value replaces the default empty dict entirely.
+
+        :return: Header dict for device flow requests (empty by default).
+        """
+
+        return {}
+
+
+    def _device_access_token_request(self, device_code: str) -> str:
+        """
+        Perform a single device authorization token request (RFC 8628, §3.4).
+
+        Calls :meth:`_device_request_headers` for extra request headers and
+        :meth:`_device_access_token_granted` after a successful token exchange.
+        Override those hooks instead of this method.
+
+        :param device_code: The device code from :meth:`_device_authorization_request`.
+
+        :return: - ``'success'``
+                 - ``'authorization_pending'``
+                 - ``'slow_down'``
+                 - ``'error'``
+                 - ``'unknown_response'``
+                 - Other error strings from the endpoint.
+        """
+
+        data = {
+            "client_id": self._client_id,
+            "device_code": device_code,
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+        }
+        poll_headers = self._device_request_headers()
+        poll_headers["Accept"] = "application/json"
+        response = UriHandler.open(
+            self.token_endpoint,
+            additional_headers=poll_headers,
+            data=data,
+            no_cache=True,
+        )
+        status = UriHandler.instance().status
+        if status.error:
+            if status.code != HTTPStatus.BAD_REQUEST:  # RFC 8628 §3.5: authorization_pending / slow_down / expired_token arrive as HTTP 400
+                Logger.error(f"OAuth2: Device access token request failed: {status.code} {status.reason}")
+                return "error"
+
+            Logger.debug(
+                "OAuth2: Device access token request returned expected HTTP 400 for device flow; "
+                "parsing body.")
+
+        try:
+            tokens = JsonHelper(response).json
+        except Exception:
+            Logger.warning("OAuth2: Failed to parse device access token response", exc_info=True)
+            return "error"
+
+        if tokens.get("error"):
+            error = tokens["error"]
+            if error not in ("authorization_pending", "slow_down"):
+                Logger.warning(f"OAuth2: Device flow error: {error!r}")
+            return error
+
+        if tokens.get("access_token"):
+            self._save_tokens(tokens)
+            self._device_access_token_granted(tokens)
+            return "success"
+
+        return "unknown_response"
+
+
+    def _poll_device_authorization(self, device_code: str) -> DeviceAuthResult:
+        """
+        Non-blocking single tick of the device flow poll loop (RFC 8628, §3.5).
+
+        Manages the polling interval — returns ``PENDING`` immediately if
+        the interval has not elapsed; on ``slow_down``, increases the interval
+        by :data:`DEVICE_FLOW_INTERVAL` seconds as required by RFC 8628, §3.5.
+
+        Suitable for callers driving their own event loop (e.g. a UI progress
+        dialog) and need to remain responsive between poll attempts.
+
+        :param device_code: Device code from :meth:`_device_authorization_request`.
+        :return: - ``DeviceAuthResult.SUCCESS``
+                 - ``DeviceAuthResult.PENDING``
+                 - ``DeviceAuthResult.ERROR``
+        """
+
+        if time.time() < self._next_poll_at:
+            return DeviceAuthResult.PENDING
+
+        result = self._device_access_token_request(device_code)
+        if result == "success":
+            return DeviceAuthResult.SUCCESS
+
+        if result == "slow_down":
+            self._poll_interval += DEVICE_FLOW_INTERVAL
+            # fall-through
+
+        if result in ("slow_down", "authorization_pending"):
+            self._next_poll_at = time.time() + self._poll_interval
+            return DeviceAuthResult.PENDING
+
+        return DeviceAuthResult.ERROR
+
+
+    def _device_authorization_request(self, scope: Optional[List[str]] = None,
+                                      additional_headers: Optional[dict] = None) -> Optional[dict]:
+        """
+        Send a Device Authorization Request (RFC 8628, §3.1–3.2).
+
+        :param scope:               Scopes to request (defaults to
+                                    :attr:`scopes` + ``offline_access``).
+        :param additional_headers:  Optional extra HTTP headers.
+
+        :return: - Response dict with ``device_code``, ``user_code``, ``verification_uri``,
+                   ``expires_in``, ``interval``, etc. (RFC 8628, §3.2).
+                 - ``None`` on error.
+        """
+
+        Logger.info(f"OAuth2: Starting device flow for {self.realm}")
+
+        if not self.device_authorization_endpoint:
+            Logger.error(f"OAuth2: Device authorization endpoint not configured for {self.realm}")
+            return None
+
+        additional_headers = additional_headers or {}
+        additional_headers["Accept"] = "application/json"
+        device_scopes = scope or (self.scopes + ["offline_access"])
+        data = {
+            "client_id": self._client_id,
+            "scope": " ".join(device_scopes),
+        }
+        response = UriHandler.open(
+            self.device_authorization_endpoint,
+            additional_headers=additional_headers,
+            data=data,
+            no_cache=True,
+        )
+
+        status = UriHandler.instance().status
+        if status.error:
+            Logger.error(f"OAuth2: Device authorization request failed: {status.code} {status.reason} for {self.realm}")
+            return None
+
+        try:
+            result = JsonHelper(response).json
+        except Exception:
+            Logger.error("OAuth2: Failed to parse device authorization response", exc_info=True)
+            return None
+
+        self._poll_interval = max(float(result.get("interval") or DEVICE_FLOW_INTERVAL), 1.0)
+        self._next_poll_at = time.time() + self._poll_interval
+
+        return result
