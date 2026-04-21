@@ -341,6 +341,16 @@ class Authenticator(object):
 
         return self.__handler.get_authentication_token()
 
+    @property
+    def authentication_headers(self) -> dict:
+        """ Returns headers required for authenticated requests to the provider's API.
+
+        :return: A dict of headers ready for use as ``additional_headers``.
+
+        """
+
+        return self.__handler.authentication_headers
+
     def log_off(self, username: Optional[str] = None, force: bool = True) -> None:
         """ Logs off the currently authenticated user, clearing stored tokens.
 

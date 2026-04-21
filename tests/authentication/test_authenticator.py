@@ -207,7 +207,28 @@ class TestAuthenticationHandlerHelpers(unittest.TestCase):
         self.assertRaises(NotImplementedError, h._poll_device_authorization, "code")
         self.assertRaises(NotImplementedError, h.get_authentication_token)
 
+    def test_authentication_headers_default_is_empty(self) -> None:
+        h = AuthenticationHandler("stub.realm", device_id=None)
+        self.assertEqual(h.authentication_headers, {})
 
+    def test_authentication_headers_returns_initial_headers(self) -> None:
+        h = AuthenticationHandler("stub.realm", device_id=None,
+                                  headers={"Authorization": "Bearer tok", "X-Custom": "val"})
+        self.assertEqual(h.authentication_headers,
+                         {"Authorization": "Bearer tok", "X-Custom": "val"})
+
+    def test_authentication_headers_returns_copy(self) -> None:
+        h = AuthenticationHandler("stub.realm", device_id=None, headers={"X-A": "1"})
+        headers = h.authentication_headers
+        headers["X-A"] = "mutated"
+        self.assertEqual(h.authentication_headers["X-A"], "1")
+
+    def test_authenticator_authentication_headers_delegates_to_handler(self) -> None:
+        h = _MockAuthHandler("stub.realm")
+        with patch.object(type(h), "authentication_headers",
+                          new_callable=lambda: property(lambda self: {"X-Token": "abc"})):
+            a = Authenticator(h)
+            self.assertEqual(a.authentication_headers, {"X-Token": "abc"})
 
 
 class TestAuthenticator(unittest.TestCase):

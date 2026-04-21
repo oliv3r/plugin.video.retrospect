@@ -51,11 +51,14 @@ class DeviceAuthResult(Enum):
 
 
 class AuthenticationHandler(object):
-    def __init__(self, realm: str, device_id: Optional[str]):
+    def __init__(self, realm: str, device_id: Optional[str],
+                 headers: Optional[dict] = None):
         """ Initializes a handler for the authentication provider
 
         :param realm:
         :param device_id:
+        :param headers: Initial set of headers supplied to this handler,
+                        used as a starting point for authentication requests.
 
         """
 
@@ -63,6 +66,7 @@ class AuthenticationHandler(object):
             raise ValueError("Missing 'realm' initializer.")
 
         self._device_id = device_id
+        self._headers: dict = dict(headers) if headers else {}
         self._realm = realm
         return
 
@@ -238,6 +242,20 @@ class AuthenticationHandler(object):
         """
 
         raise NotImplementedError
+
+    @property
+    def authentication_headers(self) -> dict:
+        """ Returns headers required for authenticated requests to the provider's API.
+
+        Returns a copy of the initial headers supplied at construction. Subclasses
+        should override to add Bearer tokens, User-Agent overrides, or any other
+        request-specific headers on top of this base.
+
+        :return: A dict of headers ready for use as ``additional_headers``.
+
+        """
+
+        return dict(self._headers)
 
     def _store_current_user_in_settings(self, username: str) -> None:
         """ Store the current user in the local settings.
