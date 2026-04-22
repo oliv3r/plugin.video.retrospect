@@ -46,7 +46,7 @@ class TestGigyaHandler(unittest.TestCase):
     def test_log_on(self):
         a = GigyaHandler(self.realm, self.api_key_3, self.api_key_4, self.__device_id)
 
-        logged_on = a.log_on(self.user_name, self.password)
+        logged_on = a._credential_log_on(self.user_name, self.password)
         self.assertTrue(logged_on)
 
     @unittest.skipIf(not os.environ.get("VIDEOLAND_USERNAME"), "Not testing login without credentials")
@@ -59,7 +59,7 @@ class TestGigyaHandler(unittest.TestCase):
     @unittest.skipIf(not os.environ.get("VIDEOLAND_USERNAME"), "Not testing login without credentials")
     def test_is_authenticated_after_login(self):
         a = GigyaHandler(self.realm, self.api_key_3, self.api_key_4, self.__device_id)
-        auth_session = a.log_on(self.user_name, self.password)
+        auth_session = a._credential_log_on(self.user_name, self.password)
         self.assertTrue(auth_session.logged_on)
 
         a = GigyaHandler(self.realm, self.api_key_3, self.api_key_4, self.__device_id)
@@ -68,13 +68,13 @@ class TestGigyaHandler(unittest.TestCase):
 
     def test_invalid_username(self):
         a = GigyaHandler(self.realm, self.api_key_3, self.api_key_4, self.__device_id)
-        res = a.log_on("nobody", "secret")
+        res = a._credential_log_on("nobody", "secret")
         self.assertFalse(res.logged_on)
 
     @unittest.skipIf(not os.environ.get("VIDEOLAND_USERNAME"), "Not testing login without credentials")
     def test_log_off(self):
         a = GigyaHandler(self.realm, self.api_key_3, self.api_key_4, self.__device_id)
-        logged_on = a.log_on(self.user_name, self.password)
+        logged_on = a._credential_log_on(self.user_name, self.password)
         self.assertTrue(logged_on)
         a.log_off(self.user_name)
         res = a.active_authentication()
@@ -84,7 +84,7 @@ class TestGigyaHandler(unittest.TestCase):
     @unittest.skipIf(not os.environ.get("VIDEOLAND_USERNAME"), "Not testing login without credentials")
     def test_token_fetch(self):
         a = GigyaHandler(self.realm, self.api_key_3, self.api_key_4, self.__device_id)
-        logged_on = a.log_on(self.user_name, self.password)
+        logged_on = a._credential_log_on(self.user_name, self.password)
         self.assertTrue(logged_on)
         token = a.get_authentication_token()
         self.assertIsNotNone(token)

@@ -30,7 +30,7 @@ class GigyaHandler(AuthenticationHandler):
         self.__has_premium = False
         self.__jwt = None
 
-    def log_on(self, username: str, password: str) -> AuthenticationResult:
+    def _credential_log_on(self, username: str, password: str) -> AuthenticationResult:
         bootstrap_url = f"https://accounts.eu1.gigya.com/accounts.webSdkBootstrap?apiKey={self.__api_key_3}&sdk=js_latest&sdkBuild={self.__build_id}&format=json"
         bootstrap = UriHandler.open(bootstrap_url, no_cache=True)
         bootstrap_json = JsonHelper(bootstrap)
@@ -115,7 +115,7 @@ class GigyaHandler(AuthenticationHandler):
             username, existing_login=True, uid=self.__uid,
             has_premium=self.__has_premium, jwt=self.__jwt)
 
-    def log_off(self, username) -> bool:
+    def _credential_log_off(self, username) -> bool:
         # Revoke the device
         revoke_url = "https://users.videoland.bedrock.tech/v3/rtlnl/m6group_web/devices/revokeCurrentDevice"
         revoke_data = {}
@@ -126,12 +126,12 @@ class GigyaHandler(AuthenticationHandler):
         revoke_json = JsonHelper(revoke_result)
         if not revoke_json.get_value("status") == "revoked":
             Logger.error(f"Error revoking device: {revoke_result}.")
-            return AuthenticationResult("")
+            return False
 
         login_token_cookie = UriHandler.get_cookie(f"glt_{self.__api_key_4}", domain=f".{self.realm}")
         if not login_token_cookie:
             Logger.error("No login token cookie found.")
-            return AuthenticationResult("")
+            return False
 
         logoff_url = f"https://gigya-merge.{self._realm}/accounts.logout"
         logoff_data = {

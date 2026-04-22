@@ -173,6 +173,7 @@ class LanguageHelper(object):
     ConnectionError = 30620
     DeviceCodeExpired = 30621
     DeviceSetupFailed = 30622
+    RevocationError = 30623
 
     Today = 30551
     Yesterday = 30552
