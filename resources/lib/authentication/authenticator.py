@@ -308,7 +308,7 @@ class Authenticator(object):
         """
 
         Logger.debug("Headless login for: %s", self.__safe_log(username))
-        result = self.__handler.log_on(username, password)
+        result = self.__handler._credential_log_on(username, password)
         if result.logged_on:
             self._set_auth_method(_AUTH_METHOD_CREDENTIALS)
             return result
@@ -341,10 +341,11 @@ class Authenticator(object):
 
         return self.__handler.get_authentication_token()
 
-    def log_off(self, username: str, force: bool = True) -> None:
+    def log_off(self, username: Optional[str] = None, force: bool = True) -> None:
         """ Logs off the currently authenticated user, clearing stored tokens.
 
-        :param username:   The username to log off.
+        :param username:   The username to log off. If omitted, logs off whoever
+                           is currently authenticated.
         :param force:      If True, log off regardless of whether the stored
                            username matches the given one.
 
@@ -356,20 +357,28 @@ class Authenticator(object):
             return
 
         logged_on_user = auth_result.username
-        if logged_on_user is not None and (force or logged_on_user == username):
-            result = self.__handler.log_off(logged_on_user)
-            if not result:
-                Logger.warning("Log off pre-hook failed")
 
         if self.device_flow:
             result = self.__handler._revoke_device_authorization(logged_on_user)
             if result:
-                Logger.debug("Logged off successfully")
+                Logger.debug("Device authorization revoked successfully")
             else:
-                Logger.error("Log off failed")
+                Logger.error("Device authorization revocation failed")
+                XbmcWrapper.show_notification(
+                    self.__channel_name, LanguageHelper.RevocationError,
+                    notification_type=XbmcWrapper.Warning)
+
+        if force or logged_on_user == username:
+            result = self.__handler._credential_log_off(logged_on_user)
+            if result:
+                Logger.debug("Credential log off succeeded")
+            else:
+                Logger.error("Credential log off failed")
                 XbmcWrapper.show_notification(
                     self.__channel_name, LanguageHelper.LogOffError,
                     notification_type=XbmcWrapper.Warning)
+        else:
+            Logger.warning("Username mismatch, skipping credential log off")
 
         self._clear_auth_method()
 

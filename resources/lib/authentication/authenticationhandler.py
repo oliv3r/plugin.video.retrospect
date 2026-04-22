@@ -70,37 +70,51 @@ class AuthenticationHandler(object):
     def realm(self) -> str:
         return self._realm
 
-    def log_on(self, username: str, password: str) -> AuthenticationResult:
-        """ Peforms the logon of a user.
+    def _credential_log_on(self, username: str, password: str) -> AuthenticationResult:
+        """ Perform a credential-based login.
 
-        :param username:    The username
-        :param password:    The password to use
+        Override to implement the actual username/password login mechanics
+        for a specific identity provider.
 
-        :returns: a AuthenticationResult with the result of the log on
+        The default implementation returns a not-logged-on result, making
+        credential login optional for handlers that only support device
+        authorization flow.
+
+        :param username:    The username, resolved from settings or UI.
+        :param password:    The password, resolved from settings or UI.
+
+        :return: An :class:`AuthenticationResult` with the login outcome.
 
         """
 
-        raise NotImplementedError
+        return AuthenticationResult("")
 
     def active_authentication(self) -> AuthenticationResult:
-        """ Check if the user with the given name is currently authenticated.
+        """ Check whether the user is currently authenticated.
 
-        :returns: a AuthenticationResult with the account data.
-
-        """
-
-        raise NotImplementedError
-
-    def log_off(self, username: str) -> bool:
-        """ Check if the user with the given name is currently authenticated.
-
-        :param username:    The username to log off
-
-        :returns: Indication of success
+        :returns: An :class:`AuthenticationResult` with the account data.
 
         """
 
         raise NotImplementedError
+
+    def _credential_log_off(self, username: str) -> bool:
+        """ Perform a credential-based log off.
+
+        Override to implement provider-specific server-side logout, such as
+        invalidating a session token or revoking a device registration.
+        Called while authentication tokens are still available.
+
+        Only called for credential logins; device flow logins skip this.
+        The default implementation is a no-op returning ``True``.
+
+        :param username:    The username to log off.
+
+        :returns: ``True`` on success, ``False`` on failure.
+
+        """
+
+        return True
 
     def _revoke_device_authorization(self, username: str) -> bool:
         """
@@ -108,8 +122,7 @@ class AuthenticationHandler(object):
 
         Override to revoke device tokens and perform any provider-specific
         cleanup (such as deregistering the device from the user's account).
-        Called while authentication tokens are still available, after
-        :meth:`log_off` has run.
+        Called while authentication tokens are still available.
 
         Only called for device flow logins; credential logins use
         :meth:`_credential_log_off` instead.

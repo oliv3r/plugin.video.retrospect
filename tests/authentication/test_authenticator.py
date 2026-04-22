@@ -38,14 +38,11 @@ class _MockAuthHandler(AuthenticationHandler):
         self._session_error = session_error
         self._active_user = active_user
 
-    def log_on(self, username: str, password: str) -> AuthenticationResult:
+    def _credential_log_on(self, username: str, password: str) -> AuthenticationResult:
         return AuthenticationResult(username if not self._error else "", error=self._error)
 
     def active_authentication(self) -> AuthenticationResult:
         return AuthenticationResult(self._active_user or "", error=self._session_error)
-
-    def log_off(self, username: str) -> bool:
-        return True
 
     def get_authentication_token(self) -> Optional[str]:
         return None
@@ -205,9 +202,7 @@ class TestAuthenticationHandlerHelpers(unittest.TestCase):
 
     def test_base_class_stubs_raise_not_implemented(self) -> None:
         h = AuthenticationHandler("stub.realm", device_id=None)
-        self.assertRaises(NotImplementedError, h.log_on, "u", "p")
         self.assertRaises(NotImplementedError, h.active_authentication)
-        self.assertRaises(NotImplementedError, h.log_off, "u")
         self.assertRaises(NotImplementedError, h._start_device_authorization, "dev")
         self.assertRaises(NotImplementedError, h._poll_device_authorization, "code")
         self.assertRaises(NotImplementedError, h.get_authentication_token)
@@ -385,12 +380,12 @@ class TestAuthenticator(unittest.TestCase):
         a = Authenticator(h)
         with patch.object(h, "active_authentication",
                           return_value=AuthenticationResult("old@example.com")), \
-             patch.object(h, "log_off", return_value=True) as mock_log_off, \
-             patch.object(h, "log_on",
-                          return_value=AuthenticationResult("new@example.com")) as mock_log_on:
+             patch.object(h, "_credential_log_off", return_value=True) as mock_cred_log_off, \
+             patch.object(h, "_credential_log_on",
+                          return_value=AuthenticationResult("new@example.com")) as mock_cred:
             result = a.log_on("new@example.com", "secret")
-        mock_log_off.assert_called_once_with("old@example.com")
-        mock_log_on.assert_called_once_with("new@example.com", "secret")
+        mock_cred_log_off.assert_called_once_with("old@example.com")
+        mock_cred.assert_called_once_with("new@example.com", "secret")
         self.assertTrue(result.logged_on)
         self.assertEqual(result.username, "new@example.com")
 
@@ -399,51 +394,51 @@ class TestAuthenticator(unittest.TestCase):
         a = Authenticator(h)
         existing = AuthenticationResult("user@example.com")
         with patch.object(h, "active_authentication", return_value=existing), \
-             patch.object(h, "log_on") as mock_log_on:
+             patch.object(h, "_credential_log_on") as mock_cred:
             result = a.log_on("user@example.com", "secret")
-        mock_log_on.assert_not_called()
+        mock_cred.assert_not_called()
         self.assertIs(result, existing)
 
     def test_log_on_fetches_password_from_channel_setting(self) -> None:
         h = _MockAuthHandler("test.realm")
         a = Authenticator(h, channel_guid="chan-guid", password_setting_id="pwd_setting")
-        with patch.object(h, "log_on",
-                          return_value=AuthenticationResult("user@example.com")) as mock_log_on, \
+        with patch.object(h, "_credential_log_on",
+                          return_value=AuthenticationResult("user@example.com")) as mock_cred, \
              patch("resources.lib.authentication.authenticator.Vault") as mock_vault_cls:
             mock_vault_cls.return_value.get_channel_setting.return_value = "vault-pwd"
             result = a.log_on("user@example.com", password=None)
         mock_vault_cls.return_value.get_channel_setting.assert_called_once_with(
             "chan-guid", "pwd_setting")
-        mock_log_on.assert_called_once_with("user@example.com", "vault-pwd")
+        mock_cred.assert_called_once_with("user@example.com", "vault-pwd")
         self.assertTrue(result.logged_on)
 
     def test_log_on_fetches_password_from_global_setting(self) -> None:
         h = _MockAuthHandler("test.realm")
         a = Authenticator(h, password_setting_id="pwd_setting")
-        with patch.object(h, "log_on",
-                          return_value=AuthenticationResult("user@example.com")) as mock_log_on, \
+        with patch.object(h, "_credential_log_on",
+                          return_value=AuthenticationResult("user@example.com")) as mock_cred, \
              patch("resources.lib.authentication.authenticator.Vault") as mock_vault_cls:
             mock_vault_cls.return_value.get_setting.return_value = "vault-pwd"
             result = a.log_on("user@example.com", password=None)
         mock_vault_cls.return_value.get_setting.assert_called_once_with("pwd_setting")
-        mock_log_on.assert_called_once_with("user@example.com", "vault-pwd")
+        mock_cred.assert_called_once_with("user@example.com", "vault-pwd")
         self.assertTrue(result.logged_on)
 
     def test_log_on_returns_unauthenticated_when_vault_has_no_password(self) -> None:
         h = _MockAuthHandler("test.realm")
         a = Authenticator(h, password_setting_id="pwd_setting")
-        with patch.object(h, "log_on") as mock_log_on, \
+        with patch.object(h, "_credential_log_on") as mock_cred, \
              patch("resources.lib.authentication.authenticator.Vault") as mock_vault_cls:
             mock_vault_cls.return_value.get_setting.return_value = None
             result = a.log_on("user@example.com", password=None)
-        mock_log_on.assert_not_called()
+        mock_cred.assert_not_called()
         self.assertFalse(result.logged_on)
         self.assertEqual(result.error, "login_failed")
 
     def test_log_on_shows_dialog_on_handler_error(self) -> None:
         h = _MockAuthHandler("test.realm")
         a = Authenticator(h)
-        with patch.object(h, "log_on",
+        with patch.object(h, "_credential_log_on",
                           return_value=AuthenticationResult("", error="bad creds")), \
              patch("resources.lib.authentication.authenticator.XbmcWrapper") as mock_wrapper:
             mock_wrapper.show_key_board.return_value = None
@@ -456,36 +451,27 @@ class TestAuthenticator(unittest.TestCase):
         a = Authenticator(h)
         with patch.object(h, "active_authentication",
                           return_value=AuthenticationResult("")), \
-             patch.object(h, "log_off") as mock_log_off:
+             patch.object(h, "_credential_log_off") as mock_cred_log_off:
             a.log_off("user@example.com")
-        mock_log_off.assert_not_called()
+        mock_cred_log_off.assert_not_called()
 
     def test_log_off_force_logs_off_regardless_of_username(self) -> None:
         h = _MockAuthHandler("test.realm")
         a = Authenticator(h)
         with patch.object(h, "active_authentication",
                           return_value=AuthenticationResult("active@example.com")), \
-             patch.object(h, "log_off", return_value=True) as mock_log_off:
+             patch.object(h, "_credential_log_off", return_value=True) as mock_cred_log_off:
             a.log_off("other@example.com", force=True)
-        mock_log_off.assert_called_once_with("active@example.com")
-
-    def test_log_off_skips_when_username_differs_and_not_forced(self) -> None:
-        h = _MockAuthHandler("test.realm")
-        a = Authenticator(h)
-        with patch.object(h, "active_authentication",
-                          return_value=AuthenticationResult("active@example.com")), \
-             patch.object(h, "log_off") as mock_log_off:
-            a.log_off("other@example.com", force=False)
-        mock_log_off.assert_not_called()
+        mock_cred_log_off.assert_called_once_with("active@example.com")
 
     def test_log_off_logs_error_on_handler_failure(self) -> None:
         h = _MockAuthHandler("test.realm")
         a = Authenticator(h)
         with patch.object(h, "active_authentication",
                           return_value=AuthenticationResult("user@example.com")), \
-             patch.object(h, "log_off", return_value=False) as mock_log_off:
+             patch.object(h, "_credential_log_off", return_value=False) as mock_cred_log_off:
             a.log_off("user@example.com", force=True)
-        mock_log_off.assert_called_once_with("user@example.com")
+        mock_cred_log_off.assert_called_once_with("user@example.com")
 
 
 class TestAuthenticatorUnit(unittest.TestCase):
@@ -760,13 +746,13 @@ class TestAuthenticatorUnit(unittest.TestCase):
         self.assertFalse(result.logged_on)
         mock_dialog.assert_called_once_with("My Channel", mock_dialog.call_args[0][1])
 
-    def test_network_error_does_not_reach_handler_log_on(self) -> None:
+    def test_network_error_in_session_check_aborts_before_login_hook(self) -> None:
         h = _MockAuthHandler("test.realm", session_error="network_error")
         with patch("resources.lib.authentication.authenticator.XbmcWrapper.show_dialog"), \
-             patch.object(h, "log_on", wraps=h.log_on) as mock_log_on:
+             patch.object(h, "_credential_log_on", wraps=h._credential_log_on) as mock_cred:
             a = Authenticator(h)
             a.log_on("user", "pass")
-        mock_log_on.assert_not_called()
+        mock_cred.assert_not_called()
 
     def test_session_error_does_not_show_dialog_for_non_network_errors(self) -> None:
         """ Non-network session errors must not surface a raw error dialog to
@@ -780,35 +766,35 @@ class TestAuthenticatorUnit(unittest.TestCase):
 
     def test_log_off_without_force_skips_handler_when_no_active_session(self) -> None:
         h = _MockAuthHandler("test.realm")
-        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+        with patch.object(h, "_credential_log_off", return_value=True) as mock_cred_log_off:
             a = Authenticator(h)
             a.log_off("", force=False)
-        mock_log_off.assert_not_called()
+        mock_cred_log_off.assert_not_called()
 
     def test_force_log_off_skips_handler_when_no_active_session(self) -> None:
         h = _MockAuthHandler("test.realm")
-        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+        with patch.object(h, "_credential_log_off", return_value=True) as mock_cred_log_off:
             a = Authenticator(h)
             a.log_off("", force=True)
-        mock_log_off.assert_not_called()
+        mock_cred_log_off.assert_not_called()
 
-    def test_log_off_without_force_skips_handler_for_different_active_user(self) -> None:
+    def test_log_off_without_force_skips_credential_log_off_for_different_active_user(self) -> None:
         h = _MockAuthHandler("test.realm", active_user="other@example.com")
-        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+        with patch.object(h, "_credential_log_off", return_value=True) as mock_cred_log_off:
             a = Authenticator(h)
             a.log_off("user@example.com", force=False)
-        mock_log_off.assert_not_called()
+        mock_cred_log_off.assert_not_called()
 
     def test_force_log_off_uses_active_username(self) -> None:
         h = _MockAuthHandler("test.realm", active_user="other@example.com")
-        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+        with patch.object(h, "_credential_log_off", return_value=True) as mock_cred_log_off:
             a = Authenticator(h)
             a.log_off("user@example.com", force=True)
-        mock_log_off.assert_called_once_with("other@example.com")
+        mock_cred_log_off.assert_called_once_with("other@example.com")
 
     def test_log_off_handler_failure_is_logged(self) -> None:
         h = _MockAuthHandler("test.realm", active_user="user@example.com")
-        with patch.object(h, "log_off", return_value=False):
+        with patch.object(h, "_credential_log_off", return_value=False):
             a = Authenticator(h)
             a.log_off("user@example.com")  # should not raise
 
@@ -825,35 +811,35 @@ class TestAuthenticatorUnit(unittest.TestCase):
 
     def test_log_off_without_force_same_user_calls_handler(self) -> None:
         h = _MockAuthHandler("test.realm", active_user="user@example.com")
-        with patch.object(h, "log_off", return_value=True) as mock_log_off:
+        with patch.object(h, "_credential_log_off", return_value=True) as mock_cred_log_off:
             a = Authenticator(h)
             a.log_off("user@example.com", force=False)
-        mock_log_off.assert_called_once_with("user@example.com")
+        mock_cred_log_off.assert_called_once_with("user@example.com")
 
     def test_resume_session_returns_existing_for_same_user(self) -> None:
         h = _MockAuthHandler("test.realm", active_user="user@example.com")
-        with patch.object(h, "log_on", wraps=h.log_on) as mock_log_on:
+        with patch.object(h, "_credential_log_on", wraps=h._credential_log_on) as mock_cred:
             a = Authenticator(h)
             result = a.log_on("user@example.com", "pass")
         self.assertTrue(result.logged_on)
-        mock_log_on.assert_not_called()
+        mock_cred.assert_not_called()
 
     def test_resume_session_returns_existing_for_different_user(self) -> None:
         h = _MockAuthHandler("test.realm", active_user="other@example.com")
-        with patch.object(h, "log_off", wraps=h.log_off) as mock_log_off, \
-             patch.object(h, "log_on", wraps=h.log_on) as mock_log_on, \
+        with patch.object(h, "_credential_log_off", wraps=h._credential_log_off) as mock_cred_log_off, \
+             patch.object(h, "_credential_log_on", wraps=h._credential_log_on) as mock_cred, \
              patch("resources.lib.authentication.authenticator.Vault"):
             a = Authenticator(h, password_setting_id="pw")
             result = a.log_on("user@example.com")
-        mock_log_off.assert_called_once_with("other@example.com")
-        mock_log_on.assert_called_once()
+        mock_cred_log_off.assert_called_once_with("other@example.com")
+        mock_cred.assert_called_once()
 
     def test_resume_session_no_existing_session_falls_through(self) -> None:
         h = _MockAuthHandler("test.realm")
-        with patch.object(h, "log_on", wraps=h.log_on) as mock_log_on:
+        with patch.object(h, "_credential_log_on", wraps=h._credential_log_on) as mock_cred:
             a = Authenticator(h)
             a.log_on("user@example.com", "pass")
-        mock_log_on.assert_called_once_with("user@example.com", "pass")
+        mock_cred.assert_called_once_with("user@example.com", "pass")
 
     def test_log_on_with_active_session_and_empty_username_logs_off(self) -> None:
         """ If an active session exists and the caller supplies an empty
@@ -861,13 +847,13 @@ class TestAuthenticatorUnit(unittest.TestCase):
         no successful interactive fallback, login_failed is returned.
         """
         h = _MockAuthHandler("test.realm", active_user="user@example.com")
-        with patch.object(h, "log_off", return_value=True) as mock_log_off, \
+        with patch.object(h, "_credential_log_off", return_value=True) as mock_cred_log_off, \
              patch.object(Authenticator, "_manual_login",
                           return_value=AuthenticationResult("", error="missing_username")) as mock_manual:
             a = Authenticator(h)
             result = a.log_on("")
 
-        mock_log_off.assert_called_once_with("user@example.com")
+        mock_cred_log_off.assert_called_once_with("user@example.com")
         mock_manual.assert_called_once()
         self.assertFalse(result.logged_on)
         self.assertEqual(result.error, "login_failed")
@@ -876,7 +862,7 @@ class TestAuthenticatorUnit(unittest.TestCase):
         """No configured username → active credential-flow session is evicted."""
 
         h = _MockAuthHandler("test.realm", active_user="user@example.com")
-        with patch.object(h, "log_off", return_value=True) as mock_log_off, \
+        with patch.object(h, "_credential_log_off", return_value=True) as mock_cred_log_off, \
              patch.object(Authenticator, "_manual_login",
                           return_value=AuthenticationResult("", error="missing_username")), \
              patch("resources.lib.authentication.authenticator.AddonSettings.get_setting",
@@ -884,33 +870,31 @@ class TestAuthenticatorUnit(unittest.TestCase):
             a = Authenticator(h, username_setting_id="user")
             result = a.log_on()
 
-        mock_log_off.assert_called_once_with("user@example.com")
+        mock_cred_log_off.assert_called_once_with("user@example.com")
         self.assertFalse(result.logged_on)
 
     def test_resume_session_evicts_on_username_mismatch_for_credential_flow(self) -> None:
         """Credential flow + different active user → session is logged off."""
 
         h = _MockAuthHandler("test.realm", active_user="other@example.com")
-        with patch.object(h, "log_off", wraps=h.log_off) as mock_log_off, \
-             patch.object(h, "log_on", wraps=h.log_on) as mock_log_on, \
+        with patch.object(h, "_credential_log_off", wraps=h._credential_log_off) as mock_cred_log_off, \
+             patch.object(h, "_credential_log_on", wraps=h._credential_log_on) as mock_cred, \
              patch("resources.lib.authentication.authenticator.Vault"):
             a = Authenticator(h, password_setting_id="pw")
             a.log_on("user@example.com")
 
-        mock_log_off.assert_called_once_with("other@example.com")
-        mock_log_on.assert_called_once()
+        mock_cred_log_off.assert_called_once_with("other@example.com")
+        mock_cred.assert_called_once()
 
     def test_resume_session_accepts_device_flow_session_without_username_match(self) -> None:
         """device_flow handler → active session resumed regardless of stored username."""
 
         h = _MockDeviceFlowAuthHandler("test.realm", active_user="sub-guid-value")
-        with patch.object(h, "log_off") as mock_log_off, \
-             patch.object(h, "log_on") as mock_log_on:
+        with patch.object(h, "_credential_log_on") as mock_cred:
             a = Authenticator(h)
             result = a.log_on("old-credential@example.com", "pass")
 
-        mock_log_off.assert_not_called()
-        mock_log_on.assert_not_called()
+        mock_cred.assert_not_called()
         self.assertTrue(result.logged_on)
         self.assertEqual(result.username, "sub-guid-value")
 
@@ -1062,6 +1046,23 @@ class TestAuthenticatorUnit(unittest.TestCase):
         self.assertIs(result, expected)
         mock_device.assert_called_once_with("user@example.com")
         mock_manual.assert_not_called()
+
+    def test_log_on_no_credentials_falls_through_to_device_flow(self) -> None:
+        """Both credentials missing → silent fall-through to device flow."""
+
+        h = _MockDeviceAuthHandler("test.realm")
+        expected = AuthenticationResult("user@example.com")
+        with patch.object(Authenticator, "_device_manual_login",
+                          return_value=expected) as mock_device, \
+             patch("resources.lib.authentication.authenticator.AddonSettings") as MockSettings, \
+             patch("resources.lib.authentication.authenticator.Vault") as MockVault:
+            MockSettings.get_setting.return_value = None
+            MockVault.return_value.get_setting.return_value = None
+            a = Authenticator(h, username_setting_id="user", password_setting_id="pw")
+            result = a.log_on()
+
+        self.assertIs(result, expected)
+        mock_device.assert_called_once()
 
     def test_log_on_third_rung_network_error_short_circuits(self) -> None:
         """Rung-3 returning network_error must short-circuit (no login_failed)."""
@@ -1269,3 +1270,44 @@ class TestAuthenticatorUnit(unittest.TestCase):
         a = Authenticator(h, channel_guid="test-guid")
         with patch.object(a, "_get_auth_method", return_value=_AUTH_METHOD_DEVICE):
             self.assertTrue(a.device_flow)
+
+    def test_log_off_credential_log_on_calls_credential_log_off(self) -> None:
+        """log_off calls _credential_log_off when login method is credential."""
+        h = _MockAuthHandler("test.realm", active_user="user")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch.object(a, "_get_auth_method", return_value="credential"), \
+             patch.object(h, "_credential_log_off", return_value=True) as mock_cred:
+            a.log_off("user")
+        mock_cred.assert_called_once_with("user")
+
+    def test_log_off_device_flow_also_runs_credential_log_off(self) -> None:
+        """log_off calls both _revoke_device_authorization and _credential_log_off for device flow sessions."""
+        h = _MockAuthHandler("test.realm", active_user="user")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch.object(a, "_get_auth_method", return_value=_AUTH_METHOD_DEVICE), \
+             patch.object(h, "_credential_log_off", return_value=True) as mock_cred, \
+             patch.object(h, "_revoke_device_authorization", return_value=True) as mock_end:
+            a.log_off("user")
+        mock_cred.assert_called_once_with("user")
+        mock_end.assert_called_once_with("user")
+
+    def test_log_off_credential_log_off_failure_shows_notification(self) -> None:
+        """_credential_log_off returning False logs error and shows a notification."""
+        h = _MockAuthHandler("test.realm", active_user="user")
+        a = Authenticator(h, channel_guid="test-guid")
+        with patch.object(a, "_get_auth_method", return_value="credential"), \
+             patch.object(h, "_credential_log_off", return_value=False), \
+             patch("resources.lib.authentication.authenticator.XbmcWrapper.show_notification") \
+                as mock_notify:
+            a.log_off("user")
+        mock_notify.assert_called_once()
+
+    def test_log_off_no_username_uses_active_user(self) -> None:
+        """log_off() without username logs off whoever is currently authenticated."""
+        h = _MockAuthHandler("test.realm", active_user="active@example.com")
+        with patch.object(h, "_credential_log_off", return_value=True) as mock_cred_log_off:
+            a = Authenticator(h)
+            a.log_off()
+        mock_cred_log_off.assert_called_once_with("active@example.com")
+
+

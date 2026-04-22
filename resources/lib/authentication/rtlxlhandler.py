@@ -44,7 +44,7 @@ class RtlXlHandler(AuthenticationHandler):
         # UriHandler.set_cookie(name="rtl_cookie_consent", value="2.0.0")
         # UriHandler.set_cookie(name="rtlcslistversion", value="39.0.0")
 
-    def log_on(self, username, password):
+    def _credential_log_on(self, username, password):
         """ Peforms the logon of a user.
 
         :param str username:    The username
@@ -134,8 +134,8 @@ class RtlXlHandler(AuthenticationHandler):
         token = token_json.get_value("accessToken")
         return token
 
-    def log_off(self, username):
-        """ Check if the user with the given name is currently authenticated.
+    def _credential_log_off(self, username) -> bool:
+        """ Clear stored credentials and session cookies.
 
         :param str username:    The username to log off
 
