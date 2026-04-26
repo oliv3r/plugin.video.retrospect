@@ -6,11 +6,13 @@ import time
 import xbmc
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, ClassVar, Dict, List, Optional, Tuple, final
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from resources.lib import chn_class, contenttype, mediatype
+from resources.lib.actions import action
+from resources.lib.actions.actionparser import ActionParser
 from resources.lib.addonsettings import AddonSettings, LOCAL
 from resources.lib.authentication.authenticator import Authenticator
 from resources.lib.authentication.nlziethandler import NLZIETHandler
@@ -47,11 +49,13 @@ API_CONTENT_URL = "https://api.nlziet.nl"
 
 # V7 API
 API_V7_APPCONFIG = "/v7/appconfig"
+API_V7_CURRENT_TIME = "/v7/currenttime"
 
 # V8 API
 API_V8_PROFILE = "/v8/profile"
 
 # V9 API
+API_V9_EPG_DATE = "/v9/epg/programlocations"
 API_V9_EPG_LIVE = "/v9/epg/programlocations/live"
 API_V9_ITEM_DETAIL = "/v9/item/detail"
 API_V9_LIVE_HANDSHAKE = "/v9/stream/handshake"
@@ -63,9 +67,12 @@ APPCONFIG_SYNC_MAX_FAIL = 10      # consecutive failures before resetting to def
 APPCONFIG_INIT_RETRY_MAX = 3      # interactive retries shown to the user during init
 
 # EPG
+EPG_DEFAULT_PAST_DAYS        = 3          # days
+EPG_DEFAULT_FUTURE_DAYS      = 3          # days
 EPG_NOW_PLAYING_TYPE_LIVE    = "Live"
 EPG_NOW_PLAYING_TYPE_RESTART = "Restart"
 EPG_NOW_PLAYING_TYPE_REPLAY  = "Replay"
+EPG_MAX_SERVER_TIME_DRIFT    = 300        # seconds; discard server timestamp if clock drift exceeds 5 minutes
 EPG_PROGRAM_LOCATION_CURRENT = 0
 
 # Subscription feature strings that map to a premium (add-on package) item.
@@ -317,6 +324,190 @@ class Channel(chn_class.Channel):
             pass
 
 
+    def _get_server_time(self) -> float:
+        """
+        Get the current Unix timestamp in seconds, preferring the server clock.
+
+        Falls back to ``time.time()`` when the API call fails or the server
+        timestamp deviates from the local clock by more than
+        ``EPG_MAX_SERVER_TIME_DRIFT`` seconds.
+
+        :returns:   Unix timestamp as a float.
+        """
+
+        raw = UriHandler.open(self._prefix_urls(API_V7_CURRENT_TIME))
+        status = UriHandler.last_status()
+        if not status.error:
+            server_ts = float(raw or 0.0) / _MS_PER_SECOND
+            if abs(server_ts - time.time()) <= EPG_MAX_SERVER_TIME_DRIFT:
+                return server_ts
+
+        return time.time()
+
+
+    def create_iptv_epg(self, parameter_parser: Optional[ActionParser] = None) -> Dict[str, Any]:
+        """
+        Build a pvr.iptvsimple EPG dict spanning past and future days.
+
+        :param parameter_parser: When provided, replay and watch-ahead stream
+                                 URLs are embedded in each EPG entry and items
+                                 are pickled for playback.  Pass ``None`` to
+                                 skip stream URL generation.
+
+        :returns:                - Dict of channel-id → EPG entry list.
+                                 - ``{}`` when not authenticated.
+
+        """
+
+        if not self.loggedOn:
+            return {}
+
+        raw_config = AddonSettings.get_setting(APPCONFIG_CACHE_KEY, store=LOCAL) or "{}"
+        try:
+            config = json.loads(raw_config)
+        except (ValueError, TypeError):
+            config = {}
+        past_days = int(config.get("epgDateRangePastDays", EPG_DEFAULT_PAST_DAYS))
+        future_days = int(config.get("epgDateRangeFutureDays", EPG_DEFAULT_FUTURE_DAYS))
+
+        parent = None
+        if parameter_parser is not None:
+            parent = MediaItem(self.channelName, self.mainListUri)
+
+        epg: Dict[str, Any] = {}
+        replay_items = []
+
+        now_ts = self._get_server_time()
+        today = date.fromtimestamp(now_ts)
+
+        for day_offset in range(-past_days, future_days + 1):
+            day = (today + timedelta(days=day_offset)).isoformat()
+
+            raw = UriHandler.open(
+                self._prefix_urls("{0}?date={1}".format(API_V9_EPG_DATE, day)),
+                additional_headers=self._request_headers
+            )
+            status = UriHandler.last_status()
+            if status.error:
+                continue
+
+            try:
+                day_data = json.loads(raw)
+            except (ValueError, TypeError):
+                continue
+
+            for channel_entry in day_data.get("data", []):
+                channel = channel_entry.get("channel")
+                channel_id = (channel or {}).get("content", {}).get("id")
+                if not channel_id:
+                    continue
+
+                if channel_id not in epg:
+                    epg[channel_id] = []
+
+                for prog in channel_entry.get("programLocations", []):
+                    content = prog.get("content", {})
+                    cid = content.get("contentItemId")
+                    start_at = content.get("startAt")
+                    end_at = content.get("endAt")
+                    title = content.get("title")
+                    landscape = (content.get("image") or {}).get("landscapeUrl")
+                    tags = content.get("tags") or []
+
+                    if (not title or
+                        not start_at or
+                        not end_at):
+                        continue
+
+                    epg_item = {"start": start_at, "stop": end_at, "title": title}
+                    if landscape:
+                        epg_item["image"] = landscape
+                    first_broadcast = content.get("firstBroadcast", "")
+                    if first_broadcast:
+                        epg_item["date"] = first_broadcast[:10].replace("-", "")
+
+                    if (parameter_parser is not None and
+                        parent is not None):
+                        try:
+                            program_start = datetime.fromisoformat(start_at).timestamp()
+                            program_end = datetime.fromisoformat(end_at).timestamp()
+                        except (ValueError, TypeError):
+                            program_start = None
+                            program_end = None
+
+
+                    epg[channel_id].append(epg_item)
+
+        if (replay_items and
+            parameter_parser is not None and
+            parent is not None):
+            parameter_parser.pickler.store_media_items(parent.guid, parent, replay_items)
+
+        return epg
+
+
+    def create_iptv_streams(self, parameter_parser: ActionParser) -> List[Dict[str, Any]]:
+        """
+        Build pvr.iptvsimple stream dicts for all live channels.
+
+        :param parameter_parser: Action parser to build URLs and store items.
+
+        :returns:                - List of stream dicts, one per live channel.
+                                 - ``[]`` when not authenticated or the API call fails.
+        """
+
+        if not self.loggedOn:
+            return []
+
+        raw = UriHandler.open(
+            self._prefix_urls(API_V9_EPG_LIVE),
+            additional_headers=self._request_headers,
+        )
+        status = UriHandler.last_status()
+        if status.error:
+            return []
+
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+
+        if not isinstance(data, dict):
+            return []
+
+        parent = MediaItem(self.channelName, self.mainListUri)
+        items = []
+        streams = []
+        entries = data.get("data", [])
+        for entry in entries:
+            item = self.create_live_channel_item(entry)
+            if item is None:
+                continue
+
+            stream_url = parameter_parser.create_action_url(
+                self, action=action.PLAY_VIDEO,
+                item=item,
+                store_id=parent.guid,
+            )
+            stream_dict = {
+                "group": self.channelName,
+                "id": item.metaData["channel_id"],
+                "logo": item.metaData.get("logo_url", ""),
+                "name": item.name,
+                "stream": stream_url,
+            }
+            content_provider = item.metaData.get("content_provider", "")
+            if content_provider:
+                stream_dict["provider"] = content_provider
+            streams.append(stream_dict)
+            items.append(item)
+
+        if items:
+            parameter_parser.pickler.store_media_items(parent.guid, parent, items)
+
+        return streams
+
+
     def _get_item_detail(self, content_item_id: str) -> dict:
         """
         Return the v9/item/detail record for ``content_item_id``, using the
@@ -548,7 +739,7 @@ class Channel(chn_class.Channel):
         params = urlencode({"progress": progress_ms, "epgType": state["epg_type"]})
         url = f"{API_CONTENT_URL}/heartbeat/epg/{content_id}?{params}"
         UriHandler.open(url, additional_headers=self._request_headers, method="POST")
-        status = UriHandler.instance().status
+        status = UriHandler.last_status()
         if status.error:
             Logger.debug(f"NLZIET: Heartbeat POST failed for {url}: {status.code} {status.reason}")
 

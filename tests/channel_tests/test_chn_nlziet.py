@@ -1214,6 +1214,59 @@ class TestNlzietChannelUnit(ChannelTest):
         self.assertEqual(result, ("null", []))
 
 
+    # -- _get_server_time --------------------------------------------------
+
+    def test_get_server_time_error_returns_local_time(self):
+        """_get_server_time() returns local time.time() when the API call fails."""
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                patch("time.time", return_value=1234567890.0):
+            UriHandler.instance().status = UriStatus(
+                code=503, url=None, error=True, reason="Unavailable")
+            result = self.channel._get_server_time()
+        self.assertEqual(result, 1234567890.0)
+
+
+    def test_get_server_time_valid_returns_server_timestamp(self):
+        """_get_server_time() returns the server timestamp when within drift tolerance."""
+
+        import chn_nlziet
+        now = 1700000000.0
+        server_ms = int(now * 1000 + 10000)  # 10 seconds ahead of local clock
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=str(server_ms)), \
+                patch("time.time", return_value=now):
+            UriHandler.instance().status = UriStatus(
+                code=200, url=None, error=False, reason="OK")
+            result = self.channel._get_server_time()
+        self.assertAlmostEqual(result, server_ms / 1000.0, delta=0.01)
+
+
+    def test_get_server_time_drifted_returns_local_time(self):
+        """_get_server_time() falls back to local time when server clock drifts too far."""
+
+        import chn_nlziet
+        now = 1700000000.0
+        drift = float(chn_nlziet.EPG_MAX_SERVER_TIME_DRIFT + 60)  # 6 minutes = 360s ahead
+        server_ms = int((now + drift) * 1000)
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=str(server_ms)), \
+                patch("time.time", return_value=now):
+            UriHandler.instance().status = UriStatus(
+                code=200, url=None, error=False, reason="OK")
+            result = self.channel._get_server_time()
+        self.assertEqual(result, now)
+
+
+    def test_get_server_time_empty_response_returns_local_time(self):
+        """_get_server_time() returns local time when server response is empty."""
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                patch("time.time", return_value=1234567890.0):
+            UriHandler.instance().status = UriStatus(
+                code=200, url=None, error=False, reason="OK")
+            result = self.channel._get_server_time()
+        self.assertEqual(result, 1234567890.0)
+
+
 class TestNlzietLoggedOnProperty(ChannelTest):
     """Tests for the Channel.loggedOn property."""
 
