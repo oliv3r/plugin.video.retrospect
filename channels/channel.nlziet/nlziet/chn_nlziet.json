@@ -3,6 +3,7 @@
     {
       "guid": "89E7B29E-6356-4276-A435-5FA915377C2C",
       "name": "NLZIET",
+      "hasIptv": true,
       "description": {
           "en": "Watch online TV the way you want.",
           "nl": "Online tv kijken zoals jij dat wilt."

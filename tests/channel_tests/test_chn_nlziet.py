@@ -2851,3 +2851,398 @@ class TestNlzietChannelMocked(TestNlzietChannelLive):
                 patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""):
             result = self.channel.update_live_item(item)
         self.assertFalse(result.complete)
+
+
+class TestNlzietIptv(ChannelTest):
+
+    def __init__(self, methodName: str) -> None:
+        super().__init__(methodName, "channel.nlziet.nlziet", None)
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._gat_patcher = patch.object(self.channel._handler, "get_authentication_token",
+                                         return_value="tok")
+        self._gat_patcher.start()
+        self._gst_patcher = patch.object(self.channel, "_get_server_time",
+                                         return_value=time.time())
+        self._gst_patcher.start()
+
+
+    def tearDown(self) -> None:
+        self._gst_patcher.stop()
+        self._gat_patcher.stop()
+        super().tearDown()
+
+    def _make_mock_parser(self) -> MagicMock:
+        parser = MagicMock()
+        parser.create_action_url.return_value = "plugin://plugin.video.retrospect/play"
+        return parser
+
+    def test_iptv_streams_not_authenticated(self) -> None:
+        """SUCCESS → returns empty list when not authenticated."""
+        with patch.object(self.channel._handler, "get_authentication_token", return_value=None):
+            result = self.channel.create_iptv_streams(self._make_mock_parser())
+        self.assertEqual(result, [])
+
+    def test_iptv_streams_parsing(self) -> None:
+        """SUCCESS → returns one stream dict per live channel with correct fields."""
+        _LIVE_FIXTURE = json.dumps({"data": [
+            {
+                "channel": {"content": {"id": "npo1", "title": "NPO 1",
+                                        "logo": {"normalUrl": "https://example.com/npo1.png"}}},
+                "programLocations": [{"content": {"assetId": "asset-1", "title": "News"}}]
+            },
+            {
+                "channel": {"content": {"id": "rtl4", "title": "RTL 4",
+                                        "logo": {"normalUrl": "https://example.com/rtl4.png"}}},
+                "programLocations": []
+            },
+        ]})
+        parser = self._make_mock_parser()
+        parser.pickler = MagicMock()
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=_LIVE_FIXTURE):
+            streams = self.channel.create_iptv_streams(parser)
+        self.assertEqual(len(streams), 2)
+        s = streams[0]
+        self.assertEqual(s["id"], "npo1")
+        self.assertEqual(s["name"], "NPO 1")
+        self.assertEqual(s["logo"], "https://example.com/npo1.png")
+        self.assertIn("stream", s)
+        parser.pickler.store_media_items.assert_called_once()
+
+    def test_iptv_streams_empty_response(self) -> None:
+        """SUCCESS → returns empty list when API response body is empty."""
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""):
+            streams = self.channel.create_iptv_streams(self._make_mock_parser())
+        self.assertEqual(streams, [])
+
+    def test_iptv_epg_not_authenticated(self) -> None:
+        """SUCCESS → returns empty dict when not authenticated."""
+        with patch.object(self.channel._handler, "get_authentication_token", return_value=None):
+            result = self.channel.create_iptv_epg()
+        self.assertEqual(result, {})
+
+    def test_iptv_epg_parsing(self) -> None:
+        """SUCCESS → returns EPG dict keyed by channel id with correct programme fields."""
+        _EPG_FIXTURE = json.dumps({"data": [{
+            "channel": {"content": {"id": "npo1"}},
+            "programLocations": [
+                {"content": {
+                    "title": "News",
+                    "startAt": "2026-02-21T20:00:00+01:00",
+                    "endAt": "2026-02-21T20:30:00+01:00",
+                    "image": {"landscapeUrl": "https://example.com/news.jpg"},
+                    "isReplayAllowed": True,
+                    "assetId": "replay-123",
+                    "contentItemId": "news-item-1"
+                }},
+                {"content": {
+                    "title": "Drama",
+                    "startAt": "2026-02-21T20:30:00+01:00",
+                    "endAt": "2026-02-21T21:30:00+01:00",
+                    "image": {},
+                    "isReplayAllowed": False,
+                    "assetId": "drama-456",
+                    "contentItemId": "drama-item-2"
+                }},
+            ]
+        }]})
+        _CONFIG = json.dumps({"epgDateRangePastDays": 0, "epgDateRangeFutureDays": 0})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=_EPG_FIXTURE):
+            with patch("resources.lib.addonsettings.AddonSettings.get_setting",
+                       return_value=_CONFIG):
+                epg = self.channel.create_iptv_epg()
+        self.assertIn("npo1", epg)
+        programmes = epg["npo1"]
+        self.assertEqual(len(programmes), 2)
+        p = programmes[0]
+        self.assertEqual(p["title"], "News")
+        self.assertEqual(p["start"], "2026-02-21T20:00:00+01:00")
+        self.assertEqual(p["stop"], "2026-02-21T20:30:00+01:00")
+        self.assertEqual(p["image"], "https://example.com/news.jpg")
+
+    def test_iptv_epg_skips_incomplete_programs(self) -> None:
+        """SUCCESS → entries missing title, startAt, or endAt are skipped."""
+        fixture = json.dumps({"data": [{
+            "channel": {"content": {"id": "npo1"}},
+            "programLocations": [
+                {"content": {"title": "", "startAt": "2026-02-21T20:00:00+01:00",
+                             "endAt": "2026-02-21T20:30:00+01:00"}},
+                {"content": {"title": "Valid", "startAt": None,
+                             "endAt": "2026-02-21T20:30:00+01:00"}},
+                {"content": {"title": "Valid", "startAt": "2026-02-21T20:00:00+01:00",
+                             "endAt": None}},
+            ]
+        }]})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=fixture), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value="{}"):
+            epg = self.channel.create_iptv_epg()
+        self.assertEqual(epg.get("npo1", []), [])
+
+    def test_iptv_epg_replay_stream(self) -> None:
+        """SUCCESS → past programme with isReplayAllowed=True gets a stream URL."""
+        past_start = "2020-01-01T10:00:00+00:00"
+        past_end = "2020-01-01T10:30:00+00:00"
+        fixture = json.dumps({"data": [{
+            "channel": {"content": {"id": "npo1"}},
+            "programLocations": [{"content": {
+                "title": "Old Show",
+                "startAt": past_start,
+                "endAt": past_end,
+                "image": {},
+                "isReplayAllowed": True,
+                "assetId": "a-1",
+                "contentItemId": "c-1",
+            }}]
+        }]})
+        parser = self._make_mock_parser()
+        parser.pickler = MagicMock()
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=fixture), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value="{}"):
+            epg = self.channel.create_iptv_epg(parser)
+        self.assertIn("stream", epg["npo1"][0])
+
+    def test_iptv_epg_watch_ahead_gets_stream(self) -> None:
+        """SUCCESS → future programme with WatchInAdvance tag gets a stream URL."""
+        future_start = "2099-01-01T10:00:00+00:00"
+        future_end = "2099-01-01T10:30:00+00:00"
+        fixture = json.dumps({"data": [{
+            "channel": {"content": {"id": "npo1"}},
+            "programLocations": [{"content": {
+                "title": "Future Show",
+                "startAt": future_start,
+                "endAt": future_end,
+                "image": {},
+                "isReplayAllowed": False,
+                "tags": ["WatchInAdvance"],
+                "assetId": "a-2",
+                "contentItemId": "c-2",
+            }}]
+        }]})
+        parser = self._make_mock_parser()
+        parser.pickler = MagicMock()
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=fixture), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value="{}"):
+            epg = self.channel.create_iptv_epg(parser)
+        self.assertIn("stream", epg["npo1"][0])
+
+    def test_iptv_epg_future_without_watch_ahead_no_stream(self) -> None:
+        """SUCCESS → future programme without WatchInAdvance tag has no stream URL."""
+        future_start = "2099-01-01T10:00:00+00:00"
+        future_end = "2099-01-01T10:30:00+00:00"
+        fixture = json.dumps({"data": [{
+            "channel": {"content": {"id": "npo1"}},
+            "programLocations": [{"content": {
+                "title": "Future Show",
+                "startAt": future_start,
+                "endAt": future_end,
+                "image": {},
+                "isReplayAllowed": False,
+                "tags": [],
+                "assetId": "a-3",
+                "contentItemId": "c-3",
+            }}]
+        }]})
+        parser = self._make_mock_parser()
+        parser.pickler = MagicMock()
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=fixture), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value="{}"):
+            epg = self.channel.create_iptv_epg(parser)
+        self.assertNotIn("stream", epg.get("npo1", [{}])[0])
+
+    def test_get_server_time_uses_server_value(self) -> None:
+        """SUCCESS → server time in ms is converted to seconds and returned within drift limit."""
+        import time as time_mod
+        server_ms = str(int(time_mod.time() * 1000))
+        self._gst_patcher.stop()
+        try:
+            with patch("resources.lib.urihandler.UriHandler.open", return_value=server_ms):
+                ts = self.channel._get_server_time()
+        finally:
+            self._gst_patcher.start()
+        self.assertAlmostEqual(ts, time_mod.time(), delta=5.0)
+
+    def test_get_server_time_fallback_on_error(self) -> None:
+        """SUCCESS → network error falls back to local time.time()."""
+        from resources.lib.urihandler import UriHandler, UriStatus
+        error_status = UriStatus(code=0, url=None, error=True, reason="fail")
+        before = time.time()
+        self._gst_patcher.stop()
+        try:
+            with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                    patch.object(UriHandler.instance(), "status", error_status, create=True):
+                ts = self.channel._get_server_time()
+        finally:
+            self._gst_patcher.start()
+        after = time.time()
+        self.assertGreaterEqual(ts, before)
+        self.assertLessEqual(ts, after + 1)
+
+    def test_get_server_time_fallback_on_excessive_drift(self) -> None:
+        """SUCCESS → server time exceeding drift limit falls back to local time.time()."""
+        from resources.lib.urihandler import UriHandler, UriStatus
+        ok_status = UriStatus(code=200, url=None, error=False, reason="OK")
+        far_future_ms = str(int((time.time() + 9999) * 1000))
+        before = time.time()
+        self._gst_patcher.stop()
+        try:
+            with patch("resources.lib.urihandler.UriHandler.open", return_value=far_future_ms), \
+                    patch.object(UriHandler.instance(), "status", ok_status, create=True):
+                ts = self.channel._get_server_time()
+        finally:
+            self._gst_patcher.start()
+        after = time.time()
+        self.assertGreaterEqual(ts, before)
+        self.assertLessEqual(ts, after + 1)
+
+    def test_get_server_time_fallback_on_empty_body(self) -> None:
+        """SUCCESS → empty response body falls back to local time.time()."""
+        from resources.lib.urihandler import UriHandler, UriStatus
+        ok_status = UriStatus(code=200, url=None, error=False, reason="OK")
+        before = time.time()
+        self._gst_patcher.stop()
+        try:
+            with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                    patch.object(UriHandler.instance(), "status", ok_status, create=True):
+                ts = self.channel._get_server_time()
+        finally:
+            self._gst_patcher.start()
+        after = time.time()
+        self.assertGreaterEqual(ts, before)
+        self.assertLessEqual(ts, after + 1)
+
+
+    def test_iptv_streams_http_error_returns_empty(self) -> None:
+        """SUCCESS → HTTP error on live EPG endpoint returns empty list."""
+        error_status = UriStatus(code=0, url=None, error=True, reason="fail")
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                patch.object(UriHandler.instance(), "status", error_status, create=True):
+            result = self.channel.create_iptv_streams(self._make_mock_parser())
+        self.assertEqual(result, [])
+
+
+    def test_iptv_streams_skips_channel_with_no_channel_key(self) -> None:
+        """SUCCESS → live entry with no 'channel' key is skipped."""
+        fixture = json.dumps({"data": [{"programLocations": []}]})
+        parser = self._make_mock_parser()
+        parser.pickler = MagicMock()
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=fixture):
+            result = self.channel.create_iptv_streams(parser)
+        self.assertEqual(result, [])
+
+
+    def test_iptv_epg_bad_config_json_uses_defaults(self) -> None:
+        """SUCCESS → invalid JSON in cached appconfig falls back to default day ranges."""
+        with patch("resources.lib.addonsettings.AddonSettings.get_setting",
+                   return_value="NOT_JSON"), \
+                patch("resources.lib.urihandler.UriHandler.open",
+                      return_value='{"data": []}'):
+            epg = self.channel.create_iptv_epg()
+        self.assertEqual(epg, {})
+
+
+    def test_iptv_epg_http_error_on_day_skips_day(self) -> None:
+        """SUCCESS → HTTP error for a day request causes that day to be skipped."""
+        error_status = UriStatus(code=0, url=None, error=True, reason="fail")
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                patch.object(UriHandler.instance(), "status", error_status, create=True), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value="{}"):
+            epg = self.channel.create_iptv_epg()
+        self.assertEqual(epg, {})
+
+
+    def test_iptv_epg_bad_day_json_skips_day(self) -> None:
+        """SUCCESS → bad JSON in a day response skips that day silently."""
+        with patch("resources.lib.urihandler.UriHandler.open", return_value="NOT_VALID_JSON"), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting",
+                      return_value='{"epgDateRangePastDays": 0, "epgDateRangeFutureDays": 0}'):
+            epg = self.channel.create_iptv_epg()
+        self.assertEqual(epg, {})
+
+
+    def test_iptv_epg_skips_entry_without_channel_id(self) -> None:
+        """SUCCESS → day entry whose channel block has no 'id' is skipped."""
+        fixture = json.dumps({"data": [
+            {"channel": {"content": {}}, "programLocations": []}
+        ]})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=fixture), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting",
+                      return_value='{"epgDateRangePastDays": 0, "epgDateRangeFutureDays": 0}'):
+            epg = self.channel.create_iptv_epg()
+        self.assertEqual(epg, {})
+
+
+    def test_iptv_epg_bad_datetime_falls_back_gracefully(self) -> None:
+        """SUCCESS → unparseable startAt/endAt leaves entry streamless but present."""
+        fixture = json.dumps({"data": [{
+            "channel": {"content": {"id": "npo1"}},
+            "programLocations": [{"content": {
+                "title": "Show",
+                "startAt": "NOT_A_DATE",
+                "endAt": "NOT_A_DATE",
+                "image": {},
+                "isReplayAllowed": False,
+                "tags": [],
+                "assetId": "a-1",
+                "contentItemId": "c-1",
+            }}]
+        }]})
+        parser = self._make_mock_parser()
+        parser.pickler = MagicMock()
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=fixture), \
+                patch("resources.lib.addonsettings.AddonSettings.get_setting",
+                      return_value='{"epgDateRangePastDays": 0, "epgDateRangeFutureDays": 0}'):
+            epg = self.channel.create_iptv_epg(parser)
+        self.assertIn("npo1", epg)
+        self.assertEqual(len(epg["npo1"]), 1)
+        self.assertNotIn("stream", epg["npo1"][0])
+
+
+    def test_create_replay_item_empty_cid_returns_none(self) -> None:
+        """SUCCESS → empty contentItemId returns None."""
+        result = self.channel._create_replay_item("", "asset-1", "Title", "npo1")
+        self.assertIsNone(result)
+
+
+    def test_create_replay_item_empty_channel_id_returns_none(self) -> None:
+        """SUCCESS → empty channel_id returns None."""
+        result = self.channel._create_replay_item("cid-1", "asset-1", "Title", "")
+        self.assertIsNone(result)
+
+
+    def test_create_replay_item_url_uses_catchup_handshake(self) -> None:
+        """SUCCESS → URL uses id= and preferredAssetId=, not contentItemId=."""
+        result = self.channel._create_replay_item("c-1", "a-1", "Title", "npo1")
+        self.assertIsNotNone(result)
+        url = result.url
+        self.assertIn("context=Epg", url)
+        self.assertIn("channel=npo1", url)
+        self.assertIn("id=c-1", url)
+        self.assertIn("preferredAssetId=a-1", url)
+        self.assertNotIn("contentItemId", url)
+
+
+    def test_iptv_epg_date_field_from_first_broadcast(self) -> None:
+        """SUCCESS → EPG entry includes 'date' key formatted as YYYYMMDD from firstBroadcast."""
+
+        fixture = json.dumps({"data": [{
+            "channel": {"content": {"id": "npo1"}},
+            "programLocations": [{"content": {
+                "title": "News",
+                "startAt": "2026-03-10T20:00:00+01:00",
+                "endAt": "2026-03-10T20:30:00+01:00",
+                "firstBroadcast": "2026-03-03T23:20:00+01:00",
+                "image": {},
+                "isReplayAllowed": False,
+                "tags": [],
+                "assetId": "a-1",
+                "contentItemId": "c-1",
+            }}],
+        }]})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=fixture), \
+             patch("resources.lib.addonsettings.AddonSettings.get_setting",
+                   return_value='{"epgDateRangePastDays": 0, "epgDateRangeFutureDays": 0}'):
+            epg = self.channel.create_iptv_epg()
+
+        self.assertIn("npo1", epg)
+        self.assertEqual(epg["npo1"][0]["date"], "20260303")
