@@ -46,7 +46,18 @@ class Authenticator(object):
         """
 
         result = self.__handler.active_authentication()
+        Logger.debug("Cached session present: %s", result.logged_on)
+
         logged_on_user = result.username
+        if result.logged_on and logged_on_user:
+            if username and logged_on_user.lower() == username.lower():
+                Logger.info("Active session found for user (%s), skipping login.",
+                            self.__safe_log(logged_on_user))
+                return result
+
+            Logger.warning("Different user requested (%s → %s). Logging off first.",
+                           self.__safe_log(logged_on_user), self.__safe_log(username))
+            self.__handler.log_off(logged_on_user)
 
         if result.error:
             Logger.error("Session check failed: %s", result.error)
@@ -56,16 +67,6 @@ class Authenticator(object):
             else:
                 XbmcWrapper.show_dialog(self.__channel_name, result.error)
 
-            return result
-
-        # Check if the existing login is the same as the requested one.
-        if logged_on_user and (not username or logged_on_user.lower() != username.lower()):
-            Logger.warning("Existing but different authenticated user (%s) found. Logging of first.",
-                           self.__safe_log(logged_on_user))
-            self.__handler.log_off(logged_on_user)
-
-        elif logged_on_user and logged_on_user == username:
-            Logger.info("Existing authenticated user (%s) found.", self.__safe_log(logged_on_user))
             return result
 
         if not username:
