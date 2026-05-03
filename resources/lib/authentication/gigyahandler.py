@@ -36,7 +36,7 @@ class GigyaHandler(AuthenticationHandler):
         bootstrap_json = JsonHelper(bootstrap)
         if not bootstrap_json.get_value("statusReason") == "OK":
             Logger.error("Error initiating login")
-            return AuthenticationResult(None)
+            return AuthenticationResult("")
 
         gmid = UriHandler.get_cookie("gmid", ".gigya.com").value
         UriHandler.set_cookie(name="gmid", value=gmid, domain=f".{self._realm}")
@@ -66,7 +66,7 @@ class GigyaHandler(AuthenticationHandler):
 
         error = result.get_value("errorDetails", fallback=None)
         if error:
-            return AuthenticationResult(None, error=error)
+            return AuthenticationResult("", error=error)
         account = result.get_value("profile", "email")
 
         self.__extract_uid_info(result)
@@ -81,7 +81,7 @@ class GigyaHandler(AuthenticationHandler):
     def active_authentication(self) -> AuthenticationResult:
         login_token_cookie = UriHandler.get_cookie(f"glt_{self.__api_key_4}", domain=f".{self.realm}")
         if not login_token_cookie:
-            return AuthenticationResult(None)
+            return AuthenticationResult("")
 
         profile_data = {
             "include": "profile,data",
@@ -103,7 +103,7 @@ class GigyaHandler(AuthenticationHandler):
             error = json_data.get_value("statusReason")
             error = json_data.get_value("errorMessage", fallback=error)
             Logger.error(f"Gigya: getAccountInfo failed: {error}")
-            return AuthenticationResult(None)
+            return AuthenticationResult("")
 
         username = json_data.get_value("profile", "email")
         self.__extract_uid_info(json_data)
@@ -126,12 +126,12 @@ class GigyaHandler(AuthenticationHandler):
         revoke_json = JsonHelper(revoke_result)
         if not revoke_json.get_value("status") == "revoked":
             Logger.error(f"Error revoking device: {revoke_result}.")
-            return AuthenticationResult(None)
+            return AuthenticationResult("")
 
         login_token_cookie = UriHandler.get_cookie(f"glt_{self.__api_key_4}", domain=f".{self.realm}")
         if not login_token_cookie:
             Logger.error("No login token cookie found.")
-            return AuthenticationResult(None)
+            return AuthenticationResult("")
 
         logoff_url = f"https://gigya-merge.{self._realm}/accounts.logout"
         logoff_data = {

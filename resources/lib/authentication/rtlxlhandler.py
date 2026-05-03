@@ -69,7 +69,7 @@ class RtlXlHandler(AuthenticationHandler):
         init_data = JsonHelper(init_login)
         if init_data.get_value("statusCode") != 200:
             Logger.error("Error initiating login")
-            return AuthenticationResult(None)
+            return AuthenticationResult("")
 
         # actually do the login request, which requires an async call to retrieve the result
         login_url = "https://sso.rtl.nl/accounts.login" \
@@ -119,7 +119,7 @@ class RtlXlHandler(AuthenticationHandler):
             auth_info.existing_login = True
             return auth_info
 
-        return AuthenticationResult(None)
+        return AuthenticationResult("")
 
     def get_authentication_token(self):
         """ Fetches an authentication token for the given login
@@ -164,7 +164,7 @@ class RtlXlHandler(AuthenticationHandler):
         if result_code != 200:
             Logger.error("Error loging in: %s - %s", logon_json.get("errorMessage"),
                          logon_json.get("errorDetails"))
-            return AuthenticationResult(None)
+            return AuthenticationResult("")
 
         user_name = logon_json.get("profile", {}).get("email") or None
 
