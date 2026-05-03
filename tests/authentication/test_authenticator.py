@@ -88,6 +88,7 @@ class TestAuthenticator(unittest.TestCase):
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
     def test_current_user(self):
+        assert self.user_name is not None and self.password is not None
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
         a.log_on(self.user_name, self.password)
@@ -97,6 +98,7 @@ class TestAuthenticator(unittest.TestCase):
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
     def test_log_on(self):
+        assert self.user_name is not None and self.password is not None
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
         res = a.log_on(self.user_name, self.password)
@@ -104,6 +106,7 @@ class TestAuthenticator(unittest.TestCase):
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
     def test_log_on_twice(self):
+        assert self.user_name is not None and self.password is not None
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
         res = a.log_on(self.user_name, self.password)
@@ -114,6 +117,7 @@ class TestAuthenticator(unittest.TestCase):
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
     def test_log_off(self):
+        assert self.user_name is not None and self.password is not None
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
         res = a.log_on(self.user_name, self.password)
@@ -123,6 +127,7 @@ class TestAuthenticator(unittest.TestCase):
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
     def test_log_on_without_log_off(self):
+        assert self.user_name is not None and self.password is not None
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
         res = a.log_on(self.user_name, self.password)
