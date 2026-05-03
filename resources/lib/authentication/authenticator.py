@@ -53,7 +53,7 @@ class Authenticator(object):
 
         if not username:
             Logger.warning("No username specified")
-            return AuthenticationResult(None)
+            return AuthenticationResult("", error="missing_username")
 
         Logger.info("Logging on user: %s", self.__safe_log(username))
         if password is None:
@@ -66,7 +66,7 @@ class Authenticator(object):
 
         if not password:
             Logger.error("No password specified")
-            return AuthenticationResult(None)
+            return AuthenticationResult("", error="missing_password")
 
         result = self.__handler.log_on(username, password)
         if result.error:

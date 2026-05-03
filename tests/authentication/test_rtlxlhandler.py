@@ -47,7 +47,7 @@ class TestRtlXlHandler(unittest.TestCase):
         a = RtlXlHandler("rtlxl.nl", self.api_key)
         res = a.active_authentication()
         self.assertFalse(res.logged_on)
-        self.assertIsNone(res.username)
+        self.assertEqual(res.username, "")
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
     def test_is_authenticated_after_login(self):
@@ -87,4 +87,4 @@ class TestRtlXlHandler(unittest.TestCase):
         a.log_off(self.user_name)
         res = a.active_authentication()
         self.assertFalse(res.logged_on)
-        self.assertIsNone(res.username)
+        self.assertEqual(res.username, "")

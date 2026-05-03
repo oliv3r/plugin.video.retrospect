@@ -79,12 +79,14 @@ class TestAuthenticator(unittest.TestCase):
         a = Authenticator(h)
         res = a.log_on("", "secret")
         self.assertFalse(res.logged_on)
+        self.assertEqual(res.error, "missing_username")
 
     def test_login_no_password(self):
         h = RtlXlHandler("rtlxl.nl", self.rtl_api_key)
         a = Authenticator(h)
         res = a.log_on("username", "")
         self.assertFalse(res.logged_on)
+        self.assertEqual(res.error, "missing_password")
 
     @unittest.skipIf(not os.environ.get("RTLXL_USERNAME"), "Not testing login without credentials")
     def test_current_user(self):
@@ -256,6 +258,7 @@ class TestAuthenticator(unittest.TestCase):
             result = a.log_on("user@example.com", password=None, setting_id="pwd_setting")
         mock_log_on.assert_not_called()
         self.assertFalse(result.logged_on)
+        self.assertEqual(result.error, "missing_password")
 
     def test_log_on_shows_dialog_on_handler_error(self) -> None:
         h = _MockAuthHandler("test.realm")
