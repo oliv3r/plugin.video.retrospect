@@ -96,6 +96,9 @@ class Channel(chn_class.Channel):
     _appconfig_last_synced_at: ClassVar[float] = 0.0
     """ ``time.time()`` of the last successful appconfig sync; ``0.0`` if never synced. """
 
+    live_restart_padding: ClassVar[int] = 0
+    """ ``liveStreamRestartStartPadding`` from the last successful appconfig sync. """
+
     _item_detail_cache: ClassVar[Dict[str, dict]] = {}
     """
     In-process RAM cache mapping contentItemId → content dict from v9/item/detail.
@@ -662,6 +665,14 @@ class Channel(chn_class.Channel):
             "&offsetType=Live"
         )
 
+        live_offset = 0
+        if self._get_setting("nlziet_restart_padding") == "true":
+            padding = Channel.live_restart_padding
+            slider = int(self._get_setting("nlziet_live_start_offset") or "0")
+            live_offset = max(0, padding + slider)
+            if live_offset > 0:
+                stream_url += f"&startOffsetInSeconds={live_offset}"
+
         stream = self._configure_drm_stream(stream_url, True)
         if stream:
             item.streams.append(stream)
@@ -941,6 +952,8 @@ class Channel(chn_class.Channel):
 
         Channel.service_interval = data.get("heartbeatInterval") or APPCONFIG_HEARTBEAT_DEFAULT
         Logger.debug(f"NLZIET: Next heartbeat in {Channel.service_interval}s")
+
+        Channel.live_restart_padding = int(data.get("liveStreamRestartStartPadding") or 0)
 
         Channel.is_blocked = data.get("isAppBlocked", False)
         Channel.blocked_reason = data.get("appBlockedReason") or ""

@@ -1423,3 +1423,11 @@ msgstr ""
 msgctxt "#30641"
 msgid "This content cannot be played."
 msgstr ""
+
+msgctxt "#30641"
+msgid "Use program start offset from service?"
+msgstr ""
+
+msgctxt "#30642"
+msgid "Additional offset (seconds)"
+msgstr ""

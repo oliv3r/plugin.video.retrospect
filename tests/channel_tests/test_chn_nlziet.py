@@ -176,7 +176,8 @@ class TestNlzietChannel(ChannelTest):
 
     def test_service_update_updates_service_interval(self) -> None:
         raw = self._appconfig_raw({"heartbeatInterval": 120})
-        with patch("resources.lib.urihandler.UriHandler.open", return_value=raw):
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=raw), \
+                patch.object(self.channel._authenticator, "active_authentication"):
             self.channel.service_update()
         import chn_nlziet
         self.assertEqual(chn_nlziet.Channel.service_interval, 120)
@@ -184,7 +185,8 @@ class TestNlzietChannel(ChannelTest):
 
     def test_service_update_uses_default_when_no_heartbeat(self) -> None:
         raw = self._appconfig_raw()
-        with patch("resources.lib.urihandler.UriHandler.open", return_value=raw):
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=raw), \
+                patch.object(self.channel._authenticator, "active_authentication"):
             self.channel.service_update()
         import chn_nlziet
         self.assertEqual(chn_nlziet.Channel.service_interval,
@@ -622,6 +624,17 @@ class TestNlzietChannelUnit(ChannelTest):
 
 
     def setUp(self) -> None:
+        # Clear any stale OAuth tokens so _request_headers never sends a Bearer token.
+        from resources.lib.addonsettings import AddonSettings, LOCAL
+        from resources.lib.authentication.nlziethandler import (
+            WEB_CLIENT_ID, DEVICE_CLIENT_ID, AUTH_CLIENT_ID_KEY)
+        for client_id in (WEB_CLIENT_ID, DEVICE_CLIENT_ID):
+            prefix = f"nlziet_oauth2_{client_id}_"
+            AddonSettings.set_setting(f"{prefix}access_token", "", store=LOCAL)
+            AddonSettings.set_setting(f"{prefix}refresh_token", "", store=LOCAL)
+            AddonSettings.set_setting(f"{prefix}expires_at", "", store=LOCAL)
+        AddonSettings.set_setting(AUTH_CLIENT_ID_KEY, WEB_CLIENT_ID, store=LOCAL)
+
         UriHandler.instance().status = UriStatus(code=0, url=None, error=False, reason=None)
         with patch("resources.lib.urihandler.UriHandler.open",
                    return_value='{"heartbeatInterval": 90, "isAppBlocked": false}'), \
@@ -1106,7 +1119,7 @@ class TestNlzietChannelUnit(ChannelTest):
         """_list_profiles() returns [] when JSON parsing raises an exception."""
 
         with patch("resources.lib.urihandler.UriHandler.open", return_value="[1,2,3]"), \
-                patch("chn_nlziet.JsonHelper", side_effect=Exception("unexpected parse error")):
+                patch("chn_nlziet.JsonHelper", side_effect=ValueError("unexpected parse error")):
             result = self.channel._list_profiles()
         self.assertEqual(result, [])
 
@@ -1214,6 +1227,7 @@ class TestNlzietLoggedOnProperty(ChannelTest):
                    return_value='{"heartbeatInterval": 90, "isAppBlocked": false}'), \
                 patch("resources.lib.xbmcwrapper.XbmcWrapper.show_yes_no"):
             super().setUp()
+        UriHandler.instance().status = UriStatus(code=0, url=None, error=False, reason=None)
 
 
     def test_logged_on_false_when_no_token(self) -> None:
@@ -1383,6 +1397,8 @@ class TestNlzietChannelMocked(TestNlzietChannelLive):
 
     def setUp(self) -> None:
         # Bypass the live-credentials gate in TestNlzietChannelLive.setUp.
+        # Wrap channel instantiation in a mock so _sync_appconfig() does not make
+        # a real network call (which would raise RuntimeError and leave self.channel None).
         UriHandler.instance().status = UriStatus(code=0, url=None, error=False, reason=None)
         with patch("resources.lib.urihandler.UriHandler.open",
                    return_value='{"heartbeatInterval": 90, "isAppBlocked": false}'), \
