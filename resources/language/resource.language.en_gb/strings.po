@@ -1413,3 +1413,11 @@ msgstr ""
 msgctxt "#30639"
 msgid "This content cannot be played."
 msgstr ""
+
+msgctxt "#30641"
+msgid "Restart at programme start"
+msgstr ""
+
+msgctxt "#30642"
+msgid "Live start offset adjustment (seconds, relative to broadcast start)"
+msgstr ""

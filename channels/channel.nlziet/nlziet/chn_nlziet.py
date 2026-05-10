@@ -583,6 +583,20 @@ class Channel(chn_class.Channel):
         return stream
 
 
+    def _get_live_restart_padding(self) -> int:
+        """
+        Get padding offset from configuration settings.
+
+        :return: ``liveStreamRestartStartPadding`` from the cached appconfig, or 0.
+        """
+
+        try:
+            data = json.loads(AddonSettings.get_setting(APPCONFIG_CACHE_KEY, store=LOCAL) or "{}")
+            return int(data.get("liveStreamRestartStartPadding") or 0)
+        except (ValueError, TypeError):
+            return 0
+
+
     def update_live_item(self, item: MediaItem) -> MediaItem:
         """
         Fetch the DASH stream URL for a live channel.
@@ -607,6 +621,14 @@ class Channel(chn_class.Channel):
             "&context=Live"
             "&offsetType=Live"
         )
+
+        live_offset = 0
+        if self._get_setting("nlziet_restart_padding") == "true":
+            padding = self._get_live_restart_padding()
+            slider = int(self._get_setting("nlziet_live_start_offset") or "0")
+            live_offset = max(0, padding + slider)
+            if live_offset > 0:
+                stream_url += f"&startOffsetInSeconds={live_offset}"
 
         stream = self._configure_drm_stream(stream_url, True)
         if stream:

@@ -1248,6 +1248,41 @@ class TestNlzietChannelUnit(ChannelTest):
         ]
 
 
+    def test_update_live_item_restart_padding_appends_offset(self) -> None:
+        """update_live_item() with padding on uses liveStreamRestartStartPadding as offset."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "0", appconfig_padding=120)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertTrue(any("startOffsetInSeconds=120" in u for u in captured_url))
+
+
+    def test_update_live_item_positive_slider_adds_to_padding(self) -> None:
+        """update_live_item() adds slider value on top of padding offset."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "30", appconfig_padding=120)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertTrue(any("startOffsetInSeconds=150" in u for u in captured_url))
+
+
+    def test_update_live_item_negative_slider_reduces_offset(self) -> None:
+        """update_live_item() subtracts negative slider from padding without going below 0."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "-60", appconfig_padding=120)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        self.assertTrue(any("startOffsetInSeconds=60" in u for u in captured_url))
+
 
     def test_update_live_item_total_offset_clamped_to_zero(self) -> None:
         """update_live_item() omits startOffsetInSeconds when combined total is negative."""
@@ -1273,6 +1308,62 @@ class TestNlzietChannelUnit(ChannelTest):
         self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
 
 
+    # -- update_live_item: playerName per flow -----------------------------
+
+    def _make_player_name_mocks(self) -> Any:
+        handshake_response = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://lic.example.com/", "headers": {}}
+        })
+        captured_url = []
+
+        def capture_open(url: str, **kwargs: Any) -> str:
+            captured_url.append(url)
+            return handshake_response
+
+        return captured_url, [
+            patch("resources.lib.urihandler.UriHandler.open", side_effect=capture_open),
+            patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value=""),
+            patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"),
+            patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"),
+        ]
+
+
+    def test_update_live_item_web_flow_uses_web_player_name(self) -> None:
+        """update_live_item() sends playerName=BitmovinWeb when _player_name is the web value."""
+
+        import chn_nlziet
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_player_name_mocks()
+        self.channel._player_name = chn_nlziet.NLZIET_PLAYER_NAME_WEB
+
+        with mocks[0], mocks[1], mocks[2], mocks[3]:
+            self.channel.update_live_item(item)
+
+        self.assertTrue(
+            any(f"playerName={chn_nlziet.NLZIET_PLAYER_NAME_WEB}" in u for u in captured_url),
+            f"Expected BitmovinWeb playerName in handshake URL, got: {captured_url}")
+
+
+    def test_update_live_item_device_flow_uses_device_player_name(self) -> None:
+        """update_live_item() sends playerName=NLZIETAndroidTVExoPlayer when _player_name is the device value."""
+
+        import chn_nlziet
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_player_name_mocks()
+        self.channel._player_name = chn_nlziet.NLZIET_PLAYER_NAME_DEVICE
+
+        with mocks[0], mocks[1], mocks[2], mocks[3]:
+            self.channel.update_live_item(item)
+
+        self.assertTrue(
+            any(f"playerName={chn_nlziet.NLZIET_PLAYER_NAME_DEVICE}" in u for u in captured_url),
+            f"Expected NLZIETAndroidTVExoPlayer playerName in handshake URL, got: {captured_url}")
+
 
     # -- __init__ device-flow branch -----------------------
 
@@ -1293,6 +1384,15 @@ class TestNlzietChannelUnit(ChannelTest):
         finally:
             AddonSettings.set_channel_setting(channel_guid, "authentication_method", orig or "", store=LOCAL)
             self._switch_channel(None)
+
+    # -- _get_live_restart_padding exception ---------------
+
+    def test_get_live_restart_padding_bad_json_returns_zero(self) -> None:
+        """_get_live_restart_padding returns 0 when the cached appconfig is corrupt JSON."""
+
+        with patch("resources.lib.addonsettings.AddonSettings.get_setting", return_value="[corrupt"):
+            result = self.channel._get_live_restart_padding()
+        self.assertEqual(result, 0)
 
     # -- _handle_stream_handshake branches ---------------------------------
 
