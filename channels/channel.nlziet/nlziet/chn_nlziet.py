@@ -632,6 +632,11 @@ class Channel(chn_class.Channel):
 
         stream = self._configure_drm_stream(stream_url, True)
         if stream:
+            if live_offset > 0:
+                stream.add_property(
+                    "inputstream.adaptive.manifest_config",
+                    json.dumps({"live_offset": live_offset})
+                )
             item.streams.append(stream)
             item.complete = True
 

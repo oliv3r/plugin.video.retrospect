@@ -1308,6 +1308,21 @@ class TestNlzietChannelUnit(ChannelTest):
         self.assertFalse(any("startOffsetInSeconds" in u for u in captured_url))
 
 
+    def test_update_live_item_offset_sets_manifest_config(self) -> None:
+        """update_live_item() sets inputstream.adaptive.manifest_config when offset > 0."""
+
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        captured_url, mocks = self._make_live_update_mocks("true", "0", appconfig_padding=90)
+        with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4]:
+            updated = self.channel.update_live_item(item)
+        self.assertTrue(updated.complete)
+        stream_props = dict(updated.streams[-1].Properties)
+        self.assertIn("inputstream.adaptive.manifest_config", stream_props)
+        config = json.loads(stream_props["inputstream.adaptive.manifest_config"])
+        self.assertEqual(config["live_offset"], 90)
+
+
     # -- update_live_item: playerName per flow -----------------------------
 
     def _make_player_name_mocks(self) -> Any:
