@@ -1,6 +1,8 @@
 # coding=utf-8  # NOSONAR
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+from typing import TYPE_CHECKING, Optional
+
 from resources.lib import envcontroller
 from resources.lib.logger import Logger
 from resources.lib.addonsettings import AddonSettings
@@ -13,6 +15,10 @@ from resources.lib.actions.actionparser import ActionParser
 from resources.lib.actions import keyword
 from resources.lib.actions import action
 
+if TYPE_CHECKING:
+    from resources.lib.actions.addonaction import AddonAction
+    from resources.lib.chn_class import Channel
+
 
 class Plugin(ActionParser):
     """ Main Plugin Class
@@ -22,7 +28,7 @@ class Plugin(ActionParser):
 
     """
 
-    def __init__(self, addon_name, params, handle=0):
+    def __init__(self, addon_name: str, params: str, handle: int = 0) -> None:
         """ Initialises the plugin with given arguments.
 
         :param str addon_name:      The add-on name.
@@ -66,9 +72,9 @@ class Plugin(ActionParser):
         # create a session
         SessionHelper.create_session(Logger.instance())
 
-    def run(self):  # NOSONAR
-        addon_action = None
-        channel_object = None
+    def run(self) -> None:  # NOSONAR
+        addon_action: Optional[AddonAction] = None
+        channel_object: Optional[Channel] = None
 
         if len(self.params) == 0:
             # Show initial start if not in a session now show the list
@@ -151,7 +157,7 @@ class Plugin(ActionParser):
                 addon_action = FolderAction(self, channel_object)
 
             elif self.params[keyword.ACTION] == action.SEARCH:
-                needle: str = self.params.get(keyword.NEEDLE, None)
+                needle: Optional[str] = self.params.get(keyword.NEEDLE, None)
                 from resources.lib.actions.searchaction import SearchAction
                 addon_action = SearchAction(self, channel_object, needle)
 
