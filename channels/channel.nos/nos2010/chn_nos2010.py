@@ -1355,6 +1355,7 @@ class Channel(chn_class.Channel):
                 group=self.channelName,
                 stream=parameter_parser.create_action_url(self, action=action.PLAY_VIDEO, item=item,
                                                           store_id=parent_item.guid),
+                provider="NPO",
             ))
 
         parameter_parser.pickler.store_media_items(parent_item.guid, parent_item, items)
