@@ -95,8 +95,7 @@ class VideoAction(AddonAction):
             kodi_player = player.Player(show_subs=show_subs, subs=available_subs)
             kodi_player.waitForPlayBack(url=start_url, time_out=30)
 
-            if AddonSettings.use_up_next() and not media_item.isLive:
-                # Wrap in setting for Next Up
+            if AddonSettings.use_up_next():
                 self.__call_upnext(media_item)
 
             xbmcplugin.endOfDirectory(self.handle, True)
@@ -147,6 +146,12 @@ class VideoAction(AddonAction):
         :param MediaItem media_item: the current item.
 
         """
+
+        if media_item.isLive:
+            if "upnext_item" not in media_item.metaData:
+                return
+            self.__notify_up_next(media_item, media_item.metaData["upnext_item"], "")
+            return
 
         store_id, siblings = self.parameter_parser.pickler.de_pickle_child_items(
             self.parameter_parser.pickle_hash)
