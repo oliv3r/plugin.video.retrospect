@@ -73,6 +73,7 @@ EPG_DEFAULT_FUTURE_DAYS = 3
 
 # Indices into the programLocations list returned by the live EPG endpoint.
 PROGRAM_LOCATION_CURRENT = 0
+PROGRAM_LOCATION_NEXT = 1
 
 # Subscription feature strings that map to a premium (add-on package) item.
 # Extend this set when NLZIET introduces additional package tiers.
@@ -870,6 +871,15 @@ class Channel(chn_class.Channel):
         )
         if item is None:
             return None
+
+        if len(program_locations) > PROGRAM_LOCATION_NEXT:
+            upnext = self._build_program_item(
+                channel,
+                program_locations[PROGRAM_LOCATION_NEXT].get("content"),
+                live_url
+            )
+            if upnext:
+                item.metaData["upnext_item"] = upnext
 
         item.isLive = True
         return item
