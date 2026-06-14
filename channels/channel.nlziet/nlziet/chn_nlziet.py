@@ -177,6 +177,13 @@ class Channel(chn_class.Channel):
             updater=self.update_live_item,
         )
 
+        self._add_data_parser(
+            self._prefix_urls(f"{API_V9_LIVE_HANDSHAKE}?context=Epg"),
+            name="EPG catchup / watch-ahead stream",
+            requires_logon=True,
+            updater=self.update_replay_item,
+        )
+
 
     @property
     def _request_headers(self) -> Dict[str, str]:
@@ -240,6 +247,45 @@ class Channel(chn_class.Channel):
 
 
     # -- IPTV/EPG handler --------------------------------------------------
+
+    def _create_replay_item(self, cid: str,
+                            channel: Optional[dict],
+                            program: Optional[dict]) -> Optional[MediaItem]:
+        """
+        Build a playable MediaItem for a catchup or watch-ahead stream.
+
+        Delegates to ``_build_program_item`` with a pre-built catchup URL so
+        that the resulting item carries full channel art and detail metadata.
+
+        :param cid:      Content item ID (``contentItemId`` from the API).
+        :param channel:  The ``channel`` dict from the EPG entry.
+        :param program:  The ``content`` dict from the program location entry.
+
+        :returns:        - A fully populated ``MediaItem``.
+                         - ``None`` when ``cid`` or ``channel`` is missing/invalid.
+
+        """
+
+        if (not cid or
+            not channel):
+            return None
+
+        channel_id = channel.get("content", {}).get("id")
+        if not channel_id:
+            return None
+
+        asset_id = (program or {}).get("assetId") or ""
+        url = self._prefix_urls(
+            f"{API_V9_LIVE_HANDSHAKE}?context=Epg"
+            f"&channel={channel_id}"
+            f"&id={cid}"
+            f"&preferredAssetId={asset_id}"
+            f"&playerName={self._player_name}"
+            "&drmType=Widevine"
+            "&sourceType=Dash"
+        )
+
+        return self._build_program_item(channel, program, url)
 
 
     def _get_server_time(self) -> float:
@@ -411,6 +457,31 @@ class Channel(chn_class.Channel):
                             program_start = None
                             program_end = None
 
+                        if (content.get("isReplayAllowed") and
+                            program_end is not None and
+                            program_end <= now_ts):
+                            replay_item = self._create_replay_item(cid, channel, content)
+                            if replay_item:
+                                epg_item["stream"] = parameter_parser.create_action_url(
+                                    self,
+                                    action=action.PLAY_VIDEO,
+                                    item=replay_item,
+                                    store_id=parent.guid,
+                                )
+                                replay_items.append(replay_item)
+
+                        if ("WatchInAdvance" in tags and
+                              program_start is not None and
+                              program_start > now_ts):
+                            watch_ahead = self._create_replay_item(cid, channel, content)
+                            if watch_ahead:
+                                epg_item["stream"] = parameter_parser.create_action_url(
+                                    self,
+                                    action=action.PLAY_VIDEO,
+                                    item=watch_ahead,
+                                    store_id=parent.guid,
+                                )
+                                replay_items.append(watch_ahead)
 
                     epg[channel_id].append(epg_item)
 
@@ -778,6 +849,26 @@ class Channel(chn_class.Channel):
         )
 
         return stream
+
+
+    def update_replay_item(self, item: MediaItem) -> MediaItem:
+        """
+        Fetch the DASH stream URL for a catchup or watch-ahead programme.
+
+        Both catchup (already-aired) and watch-ahead (not-yet-aired) items
+        share the same ``context=Epg`` handshake URL shape; the server handles
+        the time-relative difference internally.
+
+        :param MediaItem item: The item to update with stream info.
+        :return: The updated item.
+        """
+
+        Logger.debug(f"Updating catchup stream for: {item.name}")
+        stream = self._configure_drm_stream(item.url)
+        if stream:
+            item.streams.append(stream)
+            item.complete = True
+        return item
 
 
     def _get_live_restart_padding(self) -> int:
