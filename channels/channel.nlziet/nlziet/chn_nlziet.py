@@ -74,6 +74,7 @@ EPG_NOW_PLAYING_TYPE_RESTART = "Restart"
 EPG_NOW_PLAYING_TYPE_REPLAY  = "Replay"
 EPG_MAX_SERVER_TIME_DRIFT    = 300        # seconds; discard server timestamp if clock drift exceeds 5 minutes
 EPG_PROGRAM_LOCATION_CURRENT = 0
+EPG_PROGRAM_LOCATION_NEXT = 1
 
 # Subscription feature strings that map to a premium (add-on package) item.
 _PREMIUM_PACKAGES: frozenset = frozenset({
@@ -941,6 +942,15 @@ class Channel(chn_class.Channel):
         )
         if item is None:
             return None
+
+        if len(program_locations) > EPG_PROGRAM_LOCATION_NEXT:
+            upnext = self._build_program_item(
+                channel,
+                program_locations[EPG_PROGRAM_LOCATION_NEXT].get("content"),
+                live_url
+            )
+            if upnext:
+                item.metaData["upnext_item"] = upnext
 
         item.isLive = True
         return item
