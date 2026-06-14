@@ -178,6 +178,22 @@ class LanguageHelper(object):
     DeviceSetupFailed = 30622
     RevocationError = 30623
     ServiceUnavailable = 30624
+    ServiceUnavailableExhausted = 30625
+    UnknownError = 30626
+    SelectProfile = 30627
+    UnknownUser = 30628
+    WelcomeUser = 30629
+    LoginFirst = 30630
+    AccountBlocked = 30631
+    LoggedOutSuccessfully = 30632
+    NoProfilesAvailable = 30633
+    LogIn = 30634
+    LogOut = 30635
+    SwitchProfile = 30636
+    MaxStreamsReached = 30637
+    MissingSubscription = 30638
+    UnauthorizedStream = 30639
+    ChannelUnavailable = 30640
     ContentNotPlayable = 30641
     # 30642, 30643 and 30644 taken by channel settings.
 
