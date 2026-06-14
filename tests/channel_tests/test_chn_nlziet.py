@@ -910,6 +910,98 @@ class TestNlzietChannelUnit(ChannelTest):
         self.assertNotIn("content_provider", item.metaData)
 
 
+    def test_create_live_channel_item_stores_upnext_item_from_next_program(self) -> None:
+        """SUCCESS → upnext_item carries channel identity; programme title in tv_show_title."""
+        result_set = {
+            "channel": {"content": {"id": "npo1", "title": "NPO 1",
+                                     "logo": {"normalUrl": ""}}},
+            "programLocations": [
+                {"content": {"assetId": "a1", "title": "Current Show"}},
+                {"content": {"title": "Next Show",
+                             "image": {"landscapeUrl": "https://example.com/next.jpg",
+                                       "portraitUrl": None}}},
+            ],
+        }
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertIn("upnext_item", item.metaData)
+        next_item = item.metaData["upnext_item"]
+        self.assertEqual(next_item.name, "NPO 1")
+        self.assertEqual(next_item.tv_show_title, "Next Show")
+
+
+    def test_create_live_channel_item_upnext_item_has_thumb(self) -> None:
+        """SUCCESS → upnext_item.thumb set from channel logo (noImage when logo absent)."""
+        result_set = {
+            "channel": {"content": {"id": "npo1", "title": "NPO 1",
+                                     "logo": {"normalUrl": "https://example.com/logo.png"}}},
+            "programLocations": [
+                {"content": {"assetId": "a1", "title": "Current Show"}},
+                {"content": {"title": "Next Show",
+                             "image": {"landscapeUrl": "https://example.com/next.jpg",
+                                       "portraitUrl": None}}},
+            ],
+        }
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertEqual(item.metaData["upnext_item"].thumb, "https://example.com/logo.png")
+
+
+    def test_create_live_channel_item_no_next_program_omits_upnext_item(self) -> None:
+        """SUCCESS → single programLocations entry leaves upnext_item absent from metaData."""
+        result_set = self._live_result_set()
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertNotIn("upnext_item", item.metaData)
+
+
+
+    def test_create_live_channel_item_upnext_item_sets_date_from_first_broadcast(self) -> None:
+        """SUCCESS → upnext_item date set from firstBroadcast ISO string."""
+        result_set = {
+            "channel": {"content": {"id": "npo1", "title": "NPO 1",
+                                     "logo": {"normalUrl": ""}}},
+            "programLocations": [
+                {"content": {"assetId": "a1", "title": "Current Show"}},
+                {"content": {"title": "Next Show",
+                             "firstBroadcast": "2026-05-09T20:30:00+02:00",
+                             "image": {}}},
+            ],
+        }
+        item = self.channel.create_live_channel_item(result_set)
+        next_item = item.metaData["upnext_item"]
+        self.assertIn("2026-05-09", next_item.get_date())
+
+
+    def test_create_live_channel_item_upnext_item_falls_back_to_channel_logo_for_fanart(self) -> None:
+        """SUCCESS → upnext_item.fanart falls back to channel logo when next programme has no image."""
+        result_set = {
+            "channel": {"content": {"id": "npo1", "title": "NPO 1",
+                                     "logo": {"normalUrl": "https://example.com/logo.png"}}},
+            "programLocations": [
+                {"content": {"assetId": "a1", "title": "Current Show"}},
+                {"content": {"title": "Next Show", "image": {}}},
+            ],
+        }
+        item = self.channel.create_live_channel_item(result_set)
+        self.assertEqual(item.metaData["upnext_item"].fanart, "https://example.com/logo.png")
+
+
+    def test_create_live_channel_item_upnext_item_has_stream_props(self) -> None:
+        """SUCCESS → upnext_item carries DRM protection, incomplete flag, and request headers."""
+
+        result_set = {
+            "channel": {"content": {"id": "npo1", "title": "NPO 1",
+                                     "logo": {"normalUrl": ""}}},
+            "programLocations": [
+                {"content": {"assetId": "a1", "title": "Current Show"}},
+                {"content": {"title": "Next Show"}},
+            ],
+        }
+        item = self.channel.create_live_channel_item(result_set)
+        next_item = item.metaData["upnext_item"]
+        self.assertTrue(next_item.isDrmProtected)
+        self.assertFalse(next_item.complete)
+        self.assertTrue(next_item.HttpHeaders)
+
+
     def test_create_live_channel_item_no_channel(self) -> None:
         """Missing channel dict returns None."""
 
@@ -1062,8 +1154,8 @@ class TestNlzietChannelUnit(ChannelTest):
         self.assertEqual(item.fanart, "https://example.com/series-landscape.jpg")
 
 
-    def test_create_live_channel_item_no_series_landscape_keeps_episode_fanart(self) -> None:
-        """SUCCESS → fanart stays as episode landscape when series has no image."""
+    def test_create_live_channel_item_no_series_landscape_uses_content_landscape(self) -> None:
+        """SUCCESS → content landscape overrides episode landscape when series has no image."""
 
         result_set = self._live_result_set(
             landscape_url="https://example.com/episode-landscape.jpg",
@@ -1072,7 +1164,7 @@ class TestNlzietChannelUnit(ChannelTest):
                    return_value=self._detail_response(series_landscape_url=None)):
             item = self.channel.create_live_channel_item(result_set)
 
-        self.assertEqual(item.fanart, "https://example.com/episode-landscape.jpg")
+        self.assertEqual(item.fanart, "https://example.com/landscape-detail.jpg")
 
 
     def test_create_live_channel_item_detail_bad_json_leaves_description_empty(self) -> None:
@@ -1153,9 +1245,9 @@ class TestNlzietChannelUnit(ChannelTest):
         self.assertEqual(item.fanart, "https://example.com/broadcaster.png")
 
 
-    def test_create_live_channel_item_broadcaster_logo_not_used_when_fanart_exists(
+    def test_create_live_channel_item_broadcaster_logo_overrides_episode_fanart(
             self) -> None:
-        """SUCCESS → existing fanart is not replaced by broadcaster logo."""
+        """SUCCESS → broadcaster logo overrides EPG landscape when no series/content landscape."""
 
         result_set = self._live_result_set(
             landscape_url="https://example.com/prog-landscape.jpg",
@@ -1167,7 +1259,7 @@ class TestNlzietChannelUnit(ChannelTest):
                        broadcaster_logo_url="https://example.com/broadcaster.png")):
             item = self.channel.create_live_channel_item(result_set)
 
-        self.assertEqual(item.fanart, "https://example.com/prog-landscape.jpg")
+        self.assertEqual(item.fanart, "https://example.com/broadcaster.png")
 
 
     def test_create_live_channel_item_broadcaster_logo_used_as_poster_fallback(self) -> None:
@@ -1817,21 +1909,15 @@ class TestNlzietChannelUnit(ChannelTest):
         self.assertEqual(chn_nlziet.Channel.service_interval, 120)
 
 
-    # -- _add_metadata_item: genre label -----------------------------------
-
-    @staticmethod
-    def _make_item() -> "MediaItem":
-        from resources.lib.mediaitem import MediaItem
-        return MediaItem("Test Item", "https://example.com")
-
+    # -- _build_program_item: genre label -----------------------------------
 
     def test_genre_single_name_is_set_as_label(self) -> None:
         """SUCCESS → single genre name is written as the Genre info-label."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["g-1"] = {"genres": [{"name": "Drama"}]}
-        self.channel._add_metadata_item(item, "g-1")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "g-1"})
         self.assertEqual(item.get_info_label("Genre"), "Drama")
 
 
@@ -1839,11 +1925,11 @@ class TestNlzietChannelUnit(ChannelTest):
         """SUCCESS → multiple genre names are joined with \", \"."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["g-2"] = {
             "genres": [{"name": "Drama"}, {"name": "Thriller"}]
         }
-        self.channel._add_metadata_item(item, "g-2")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "g-2"})
         self.assertEqual(item.get_info_label("Genre"), "Drama, Thriller")
 
 
@@ -1851,9 +1937,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """genres key absent from detail dict → Genre label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["g-3"] = {}
-        self.channel._add_metadata_item(item, "g-3")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "g-3"})
         self.assertFalse(item.has_info_label("Genre"))
 
 
@@ -1861,9 +1947,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """genres is an empty list → Genre label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["g-4"] = {"genres": []}
-        self.channel._add_metadata_item(item, "g-4")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "g-4"})
         self.assertFalse(item.has_info_label("Genre"))
 
 
@@ -1871,11 +1957,11 @@ class TestNlzietChannelUnit(ChannelTest):
         """All genre dicts lack the 'name' key → Genre label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["g-5"] = {
             "genres": [{"id": "1"}, {"id": "2"}]
         }
-        self.channel._add_metadata_item(item, "g-5")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "g-5"})
         self.assertFalse(item.has_info_label("Genre"))
 
 
@@ -1883,11 +1969,11 @@ class TestNlzietChannelUnit(ChannelTest):
         """All genre names are empty strings → Genre label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["g-6"] = {
             "genres": [{"name": ""}, {"name": ""}]
         }
-        self.channel._add_metadata_item(item, "g-6")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "g-6"})
         self.assertFalse(item.has_info_label("Genre"))
 
 
@@ -1895,9 +1981,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """All genre names are None → Genre label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["g-7"] = {"genres": [{"name": None}]}
-        self.channel._add_metadata_item(item, "g-7")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "g-7"})
         self.assertFalse(item.has_info_label("Genre"))
 
 
@@ -1905,11 +1991,11 @@ class TestNlzietChannelUnit(ChannelTest):
         """Genre dicts missing 'name' key are skipped; named entries are joined."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["g-8"] = {
             "genres": [{"name": "Drama"}, {"id": "no-name"}]
         }
-        self.channel._add_metadata_item(item, "g-8")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "g-8"})
         self.assertEqual(item.get_info_label("Genre"), "Drama")
 
 
@@ -1917,11 +2003,11 @@ class TestNlzietChannelUnit(ChannelTest):
         """Genre dict with empty string name is skipped; named entries are joined."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["g-9"] = {
             "genres": [{"name": "Drama"}, {"name": ""}]
         }
-        self.channel._add_metadata_item(item, "g-9")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "g-9"})
         self.assertEqual(item.get_info_label("Genre"), "Drama")
 
 
@@ -1929,23 +2015,23 @@ class TestNlzietChannelUnit(ChannelTest):
         """Genre dict with None name is skipped; named entries are joined."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["g-10"] = {
             "genres": [{"name": "Drama"}, {"name": None}]
         }
-        self.channel._add_metadata_item(item, "g-10")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "g-10"})
         self.assertEqual(item.get_info_label("Genre"), "Drama")
 
 
-    # -- _add_metadata_item: nicam/Mpaa label ------------------------------
+    # -- _build_program_item: nicam/Mpaa label ------------------------------
 
     def test_nicam_age_sets_mpaa_label(self) -> None:
         """SUCCESS → numeric NICAM age is formatted and set as the Mpaa label."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["n-1"] = {"nicam": {"age": "16"}}
-        self.channel._add_metadata_item(item, "n-1")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "n-1"})
         self.assertEqual(item.get_info_label("Mpaa"), "NICAM 16+")
 
 
@@ -1953,9 +2039,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """AllAges NICAM rating → Mpaa label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["n-2"] = {"nicam": {"age": "AllAges"}}
-        self.channel._add_metadata_item(item, "n-2")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "n-2"})
         self.assertFalse(item.has_info_label("Mpaa"))
 
 
@@ -1963,9 +2049,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """nicam key absent from detail → Mpaa label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["n-3"] = {}
-        self.channel._add_metadata_item(item, "n-3")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "n-3"})
         self.assertFalse(item.has_info_label("Mpaa"))
 
 
@@ -1973,9 +2059,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """nicam present but empty → Mpaa label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["n-4"] = {"nicam": {}}
-        self.channel._add_metadata_item(item, "n-4")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "n-4"})
         self.assertFalse(item.has_info_label("Mpaa"))
 
 
@@ -1983,9 +2069,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """nicam present but age key absent → Mpaa label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["n-5"] = {"nicam": {"locale": "nl"}}
-        self.channel._add_metadata_item(item, "n-5")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "n-5"})
         self.assertFalse(item.has_info_label("Mpaa"))
 
 
@@ -1993,9 +2079,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """nicam age is empty string → Mpaa label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["n-6"] = {"nicam": {"age": ""}}
-        self.channel._add_metadata_item(item, "n-6")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "n-6"})
         self.assertFalse(item.has_info_label("Mpaa"))
 
 
@@ -2003,21 +2089,21 @@ class TestNlzietChannelUnit(ChannelTest):
         """nicam age is None → Mpaa label is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["n-7"] = {"nicam": {"age": None}}
-        self.channel._add_metadata_item(item, "n-7")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "n-7"})
         self.assertFalse(item.has_info_label("Mpaa"))
 
 
-    # -- _add_metadata_item: series_title ----------------------------------
+    # -- _build_program_item: series_title ----------------------------------
 
     def test_series_title_is_set_on_item(self) -> None:
         """SUCCESS → series title is written to tv_show_title."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["s-1"] = {"series": {"title": "Breaking Bad"}}
-        self.channel._add_metadata_item(item, "s-1")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "s-1"})
         self.assertEqual(item.tv_show_title, "Breaking Bad")
 
 
@@ -2025,9 +2111,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """series key absent from detail → tv_show_title is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["s-2"] = {}
-        self.channel._add_metadata_item(item, "s-2")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "s-2"})
         self.assertFalse(item.tv_show_title)
 
 
@@ -2035,9 +2121,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """series present but empty → tv_show_title is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["s-3"] = {"series": {}}
-        self.channel._add_metadata_item(item, "s-3")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "s-3"})
         self.assertFalse(item.tv_show_title)
 
 
@@ -2045,9 +2131,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """series present but title key absent → tv_show_title is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["s-4"] = {"series": {"id": "123"}}
-        self.channel._add_metadata_item(item, "s-4")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "s-4"})
         self.assertFalse(item.tv_show_title)
 
 
@@ -2055,9 +2141,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """series title is empty string → tv_show_title is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["s-5"] = {"series": {"title": ""}}
-        self.channel._add_metadata_item(item, "s-5")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "s-5"})
         self.assertFalse(item.tv_show_title)
 
 
@@ -2065,23 +2151,23 @@ class TestNlzietChannelUnit(ChannelTest):
         """series title is None → tv_show_title is not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["s-6"] = {"series": {"title": None}}
-        self.channel._add_metadata_item(item, "s-6")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "s-6"})
         self.assertFalse(item.tv_show_title)
 
 
-    # -- _add_metadata_item: series_image ----------------------------------
+    # -- _build_program_item: series_image ----------------------------------
 
     def test_series_image_landscape_sets_fanart(self) -> None:
         """SUCCESS → series landscapeUrl is set as fanart."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["si-1"] = {
             "series": {"image": {"landscapeUrl": "https://example.com/series-land.jpg"}}
         }
-        self.channel._add_metadata_item(item, "si-1")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "si-1"})
         self.assertEqual(item.fanart, "https://example.com/series-land.jpg")
 
 
@@ -2089,61 +2175,61 @@ class TestNlzietChannelUnit(ChannelTest):
         """SUCCESS → series portraitUrl is set as poster."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["si-2"] = {
             "series": {"image": {"portraitUrl": "https://example.com/series-port.jpg"}}
         }
-        self.channel._add_metadata_item(item, "si-2")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "si-2"})
         self.assertEqual(item.poster, "https://example.com/series-port.jpg")
 
 
     def test_series_image_empty_dict_does_not_set_fanart_or_poster(self) -> None:
-        """series image present but empty → fanart and poster not set from series."""
+        """series image present but empty → fanart and poster fall back to channel defaults."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["si-3"] = {"series": {"image": {}}}
-        self.channel._add_metadata_item(item, "si-3")
-        self.assertFalse(item.fanart)
-        self.assertFalse(item.poster)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "si-3"})
+        self.assertEqual(item.fanart, self.channel.fanart)
+        self.assertEqual(item.poster, self.channel.poster)
 
 
     def test_series_image_landscape_none_does_not_set_fanart(self) -> None:
-        """series landscapeUrl is None → fanart not set from series."""
+        """series landscapeUrl is None → fanart falls back to channel default."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["si-4"] = {
             "series": {"image": {"landscapeUrl": None}}
         }
-        self.channel._add_metadata_item(item, "si-4")
-        self.assertFalse(item.fanart)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "si-4"})
+        self.assertEqual(item.fanart, self.channel.fanart)
 
 
     def test_series_image_portrait_none_does_not_set_poster(self) -> None:
-        """series portraitUrl is None → poster not set from series."""
+        """series portraitUrl is None → poster falls back to channel default."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["si-5"] = {
             "series": {"image": {"portraitUrl": None}}
         }
-        self.channel._add_metadata_item(item, "si-5")
-        self.assertFalse(item.poster)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "si-5"})
+        self.assertEqual(item.poster, self.channel.poster)
 
 
-    # -- _add_metadata_item: broadcasters ----------------------------------
+    # -- _build_program_item: broadcasters ----------------------------------
 
 
     def test_broadcaster_logo_sets_fanart_and_poster_as_fallback(self) -> None:
         """SUCCESS → broadcasters[0].logoUrl sets fanart and poster when no other images."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["b-1"] = {
             "broadcasters": [{"logoUrl": "https://example.com/logo.png"}]
         }
-        self.channel._add_metadata_item(item, "b-1")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "b-1"})
         self.assertEqual(item.fanart, "https://example.com/logo.png")
         self.assertEqual(item.poster, "https://example.com/logo.png")
 
@@ -2152,12 +2238,12 @@ class TestNlzietChannelUnit(ChannelTest):
         """series landscapeUrl takes priority over broadcaster logo for fanart."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["b-2"] = {
             "broadcasters": [{"logoUrl": "https://example.com/logo.png"}],
             "series": {"image": {"landscapeUrl": "https://example.com/series-land.jpg"}},
         }
-        self.channel._add_metadata_item(item, "b-2")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "b-2"})
         self.assertEqual(item.fanart, "https://example.com/series-land.jpg")
 
 
@@ -2165,86 +2251,86 @@ class TestNlzietChannelUnit(ChannelTest):
         """detail image landscapeUrl takes priority over broadcaster logo for fanart."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["b-3"] = {
             "broadcasters": [{"logoUrl": "https://example.com/logo.png"}],
             "image": {"landscapeUrl": "https://example.com/content-land.jpg"},
         }
-        self.channel._add_metadata_item(item, "b-3")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "b-3"})
         self.assertEqual(item.fanart, "https://example.com/content-land.jpg")
 
 
     def test_broadcaster_key_absent_does_not_set_fanart(self) -> None:
-        """broadcasters key absent → fanart not set from broadcaster."""
+        """broadcasters key absent → fanart and poster fall back to channel defaults."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["b-4"] = {}
-        self.channel._add_metadata_item(item, "b-4")
-        self.assertFalse(item.fanart)
-        self.assertFalse(item.poster)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "b-4"})
+        self.assertEqual(item.fanart, self.channel.fanart)
+        self.assertEqual(item.poster, self.channel.poster)
 
 
     def test_broadcaster_empty_list_does_not_set_fanart(self) -> None:
-        """broadcasters is empty list → fanart not set from broadcaster."""
+        """broadcasters is empty list → fanart and poster fall back to channel defaults."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["b-5"] = {"broadcasters": []}
-        self.channel._add_metadata_item(item, "b-5")
-        self.assertFalse(item.fanart)
-        self.assertFalse(item.poster)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "b-5"})
+        self.assertEqual(item.fanart, self.channel.fanart)
+        self.assertEqual(item.poster, self.channel.poster)
 
 
     def test_broadcaster_logo_url_key_absent_does_not_set_fanart(self) -> None:
-        """broadcasters[0] has no logoUrl key → fanart not set from broadcaster."""
+        """broadcasters[0] has no logoUrl key → fanart and poster fall back to channel defaults."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["b-6"] = {"broadcasters": [{"name": "RTL"}]}
-        self.channel._add_metadata_item(item, "b-6")
-        self.assertFalse(item.fanart)
-        self.assertFalse(item.poster)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "b-6"})
+        self.assertEqual(item.fanart, self.channel.fanart)
+        self.assertEqual(item.poster, self.channel.poster)
 
 
     def test_broadcaster_logo_url_none_does_not_set_fanart(self) -> None:
-        """broadcasters[0].logoUrl is None → fanart not set from broadcaster."""
+        """broadcasters[0].logoUrl is None → fanart and poster fall back to channel defaults."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["b-7"] = {
             "broadcasters": [{"logoUrl": None}]
         }
-        self.channel._add_metadata_item(item, "b-7")
-        self.assertFalse(item.fanart)
-        self.assertFalse(item.poster)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "b-7"})
+        self.assertEqual(item.fanart, self.channel.fanart)
+        self.assertEqual(item.poster, self.channel.poster)
 
 
     def test_broadcaster_logo_url_empty_string_does_not_set_fanart(self) -> None:
-        """broadcasters[0].logoUrl is empty string → fanart not set from broadcaster."""
+        """broadcasters[0].logoUrl is empty string → fanart and poster fall back to channel defaults."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["b-8"] = {
             "broadcasters": [{"logoUrl": ""}]
         }
-        self.channel._add_metadata_item(item, "b-8")
-        self.assertFalse(item.fanart)
-        self.assertFalse(item.poster)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "b-8"})
+        self.assertEqual(item.fanart, self.channel.fanart)
+        self.assertEqual(item.poster, self.channel.poster)
 
 
-    # -- _add_metadata_item: detail image ----------------------------------
+    # -- _build_program_item: detail image ----------------------------------
 
 
     def test_detail_image_landscape_sets_fanart(self) -> None:
         """SUCCESS → detail image landscapeUrl is set as fanart when no series images."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["di-1"] = {
             "image": {"landscapeUrl": "https://example.com/content-land.jpg"}
         }
-        self.channel._add_metadata_item(item, "di-1")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "di-1"})
         self.assertEqual(item.fanart, "https://example.com/content-land.jpg")
 
 
@@ -2252,83 +2338,83 @@ class TestNlzietChannelUnit(ChannelTest):
         """SUCCESS → detail image portraitUrl is set as poster when no series images."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["di-2"] = {
             "image": {"portraitUrl": "https://example.com/content-port.jpg"}
         }
-        self.channel._add_metadata_item(item, "di-2")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "di-2"})
         self.assertEqual(item.poster, "https://example.com/content-port.jpg")
 
 
     def test_detail_image_key_absent_does_not_set_fanart_or_poster(self) -> None:
-        """image key absent → fanart and poster not set from detail image."""
+        """image key absent → fanart and poster fall back to channel defaults."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["di-3"] = {}
-        self.channel._add_metadata_item(item, "di-3")
-        self.assertFalse(item.fanart)
-        self.assertFalse(item.poster)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "di-3"})
+        self.assertEqual(item.fanart, self.channel.fanart)
+        self.assertEqual(item.poster, self.channel.poster)
 
 
     def test_detail_image_empty_dict_does_not_set_fanart_or_poster(self) -> None:
-        """image key present but empty dict → fanart and poster not set from detail image."""
+        """image key present but empty dict → fanart and poster fall back to channel defaults."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["di-4"] = {"image": {}}
-        self.channel._add_metadata_item(item, "di-4")
-        self.assertFalse(item.fanart)
-        self.assertFalse(item.poster)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "di-4"})
+        self.assertEqual(item.fanart, self.channel.fanart)
+        self.assertEqual(item.poster, self.channel.poster)
 
 
     def test_detail_image_landscape_none_does_not_set_fanart(self) -> None:
-        """detail image landscapeUrl is None → fanart not set from detail image."""
+        """detail image landscapeUrl is None → fanart falls back to channel default."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["di-5"] = {
             "image": {"landscapeUrl": None}
         }
-        self.channel._add_metadata_item(item, "di-5")
-        self.assertFalse(item.fanart)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "di-5"})
+        self.assertEqual(item.fanart, self.channel.fanart)
 
 
     def test_detail_image_portrait_none_does_not_set_poster(self) -> None:
-        """detail image portraitUrl is None → poster not set from detail image."""
+        """detail image portraitUrl is None → poster falls back to channel default."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["di-6"] = {
             "image": {"portraitUrl": None}
         }
-        self.channel._add_metadata_item(item, "di-6")
-        self.assertFalse(item.poster)
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "di-6"})
+        self.assertEqual(item.poster, self.channel.poster)
 
 
     def test_detail_image_series_landscape_takes_priority_over_content(self) -> None:
         """series landscapeUrl takes priority over detail image landscapeUrl for fanart."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["di-7"] = {
             "image": {"landscapeUrl": "https://example.com/content-land.jpg"},
             "series": {"image": {"landscapeUrl": "https://example.com/series-land.jpg"}},
         }
-        self.channel._add_metadata_item(item, "di-7")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "di-7"})
         self.assertEqual(item.fanart, "https://example.com/series-land.jpg")
 
 
-    # -- _add_metadata_item: description -----------------------------------
+    # -- _build_program_item: description -----------------------------------
 
 
     def test_description_key_absent_does_not_set_description(self) -> None:
         """description key absent → item.description not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["desc-1"] = {}
-        self.channel._add_metadata_item(item, "desc-1")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "desc-1"})
         self.assertFalse(item.description)
 
 
@@ -2336,9 +2422,9 @@ class TestNlzietChannelUnit(ChannelTest):
         """description is empty string → item.description not set."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["desc-2"] = {"description": ""}
-        self.channel._add_metadata_item(item, "desc-2")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "desc-2"})
         self.assertFalse(item.description)
 
 
@@ -2346,11 +2432,11 @@ class TestNlzietChannelUnit(ChannelTest):
         """description present, no series/episode title → item.description = plain text."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["desc-3"] = {
             "description": "Some episode description."
         }
-        self.channel._add_metadata_item(item, "desc-3")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "desc-3"})
         self.assertEqual(item.description, "Some episode description.")
 
 
@@ -2358,12 +2444,12 @@ class TestNlzietChannelUnit(ChannelTest):
         """description + series title, no episode title → bold series header prepended."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["desc-4"] = {
             "series": {"title": "My Show"},
             "description": "About this episode.",
         }
-        self.channel._add_metadata_item(item, "desc-4")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "desc-4"})
         self.assertEqual(item.description, "[B]My Show[/B]\n\nAbout this episode.")
 
 
@@ -2371,12 +2457,12 @@ class TestNlzietChannelUnit(ChannelTest):
         """description + episode title, no series title → italic episode header prepended."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["desc-5"] = {
             "title": "Episode One",
             "description": "About this episode.",
         }
-        self.channel._add_metadata_item(item, "desc-5")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "desc-5"})
         self.assertEqual(item.description, "[I]Episode One[/I]\n\nAbout this episode.")
 
 
@@ -2384,13 +2470,13 @@ class TestNlzietChannelUnit(ChannelTest):
         """description + both titles → bold series + italic episode header prepended."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["desc-6"] = {
             "series": {"title": "My Show"},
             "title": "Episode One",
             "description": "About this episode.",
         }
-        self.channel._add_metadata_item(item, "desc-6")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "desc-6"})
         self.assertEqual(
             item.description,
             "[B]My Show[/B]\n[I]Episode One[/I]\n\nAbout this episode."
@@ -2401,12 +2487,12 @@ class TestNlzietChannelUnit(ChannelTest):
         """episode title is None → treated as absent, no italic header."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["desc-7"] = {
             "title": None,
             "description": "About this episode.",
         }
-        self.channel._add_metadata_item(item, "desc-7")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "desc-7"})
         self.assertEqual(item.description, "About this episode.")
 
 
@@ -2414,12 +2500,12 @@ class TestNlzietChannelUnit(ChannelTest):
         """series title is None → treated as absent, no bold header."""
 
         import chn_nlziet
-        item = self._make_item()
         chn_nlziet.Channel._item_detail_cache["desc-8"] = {
             "series": {"title": None},
             "description": "About this episode.",
         }
-        self.channel._add_metadata_item(item, "desc-8")
+        channel = {"content": {"id": "ch", "title": "Channel", "logo": {}}}
+        item = self.channel._build_program_item(channel, {"contentItemId": "desc-8"})
         self.assertEqual(item.description, "About this episode.")
 
 
@@ -2866,6 +2952,9 @@ class TestNlzietIptv(ChannelTest):
         self._gst_patcher = patch.object(self.channel, "_get_server_time",
                                          return_value=time.time())
         self._gst_patcher.start()
+        # Reset UriHandler status so a failed real HTTP call in one test does not
+        # cause subsequent tests to see status.error=True and bail out early.
+        UriHandler.instance().status = UriStatus(code=0, url=None, error=False, reason=None)
 
 
     def tearDown(self) -> None:
@@ -3006,7 +3095,7 @@ class TestNlzietIptv(ChannelTest):
         past_start = "2020-01-01T10:00:00+00:00"
         past_end = "2020-01-01T10:30:00+00:00"
         fixture = json.dumps({"data": [{
-            "channel": {"content": {"id": "npo1"}},
+            "channel": {"content": {"id": "npo1", "title": "NPO 1"}},
             "programLocations": [{"content": {
                 "title": "Old Show",
                 "startAt": past_start,
@@ -3029,7 +3118,7 @@ class TestNlzietIptv(ChannelTest):
         future_start = "2099-01-01T10:00:00+00:00"
         future_end = "2099-01-01T10:30:00+00:00"
         fixture = json.dumps({"data": [{
-            "channel": {"content": {"id": "npo1"}},
+            "channel": {"content": {"id": "npo1", "title": "NPO 1"}},
             "programLocations": [{"content": {
                 "title": "Future Show",
                 "startAt": future_start,
@@ -3222,19 +3311,23 @@ class TestNlzietIptv(ChannelTest):
 
     def test_create_replay_item_empty_cid_returns_none(self) -> None:
         """SUCCESS → empty contentItemId returns None."""
-        result = self.channel._create_replay_item("", "asset-1", "Title", "npo1")
+        channel_dict = {"content": {"id": "npo1", "title": "NPO 1"}, "missingSubscriptionFeature": None}
+        result = self.channel._create_replay_item("", channel_dict, {})
         self.assertIsNone(result)
 
 
     def test_create_replay_item_empty_channel_id_returns_none(self) -> None:
-        """SUCCESS → empty channel_id returns None."""
-        result = self.channel._create_replay_item("cid-1", "asset-1", "Title", "")
+        """SUCCESS → missing channel returns None."""
+        result = self.channel._create_replay_item("cid-1", None, {})
         self.assertIsNone(result)
 
 
     def test_create_replay_item_url_uses_catchup_handshake(self) -> None:
         """SUCCESS → URL uses id= and preferredAssetId=, not contentItemId=."""
-        result = self.channel._create_replay_item("c-1", "a-1", "Title", "npo1")
+        channel_dict = {"content": {"id": "npo1", "title": "NPO 1"}, "missingSubscriptionFeature": None}
+        program_dict = {"title": "Title", "contentItemId": "c-1", "assetId": "a-1"}
+        with patch("resources.lib.urihandler.UriHandler.open", return_value="{}"):
+            result = self.channel._create_replay_item("c-1", channel_dict, program_dict)
         self.assertIsNotNone(result)
         url = result.url
         self.assertIn("context=Epg", url)
