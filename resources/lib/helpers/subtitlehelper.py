@@ -80,7 +80,7 @@ class SubtitleHelper(object):
 
             Logger.trace("Opening Subtitle URL")
             raw = UriHandler.open(url)
-            if UriHandler.instance().status.error:
+            if UriHandler.last_status().error:
                 Logger.warning("Could not retrieve subtitle from %s", url)
                 return ""
 
