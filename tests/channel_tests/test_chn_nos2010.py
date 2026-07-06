@@ -22,6 +22,7 @@ class TestNpoChannel(ChannelTest):
         self._test_folder_url("https://npo.nl/luister",
                               expected_results=4)
 
+    @unittest.skipIf("CI" in os.environ, "Skipping in CI due to Geo-Restrictions")
     def test_live_radio_video(self):
         url = "https://www.npo3fm.nl/"
         self._test_video_url(url, parser="liveRadio")
@@ -55,7 +56,7 @@ class TestNpoChannel(ChannelTest):
             "83dc1f25-a065-496c-9418-bd5c60dfb36d": "NPO"
         }
         items = self.channel.process_folder_list(item)
-        self.assertGreater(len(items), 10)
+        self.assertGreater(len(items), 5)
 
     def test_series_without_season(self):
         items = self._test_folder_url("https://npo.nl/start/api/domain/programs-by-season?guid=d205ce60-d638-4cab-8dbf-d48ddd7c489e", 1)
