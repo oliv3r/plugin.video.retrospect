@@ -35,7 +35,7 @@ Creator = Union[
     Callable[[List[str]], CreatorResult],
     Callable[[Dict], CreatorResult]
 ]
-Parser = Union[List[Union[str, int, Tuple[str, str]]], str]
+Parser = Union[List[Union[str, int, Tuple]], str]
 Updater = Callable[[MediaItem], MediaItem]
 PostProcessor = Union[
     Callable[[str, List[MediaItem]], List[MediaItem]],
