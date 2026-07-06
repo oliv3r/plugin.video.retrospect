@@ -10,3 +10,4 @@ _None_
 
 [B]Channel related[/B]
 * Fixed: De Schatkamer added new content urls.
+* Fixed: More stream types for SVT (Fixes #1924).
