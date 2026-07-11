@@ -703,9 +703,11 @@ class Channel(chn_class.Channel):
                 minute = start_time.tm_min
 
             item.name = "{:02}:{:02} - {}".format(hour, minute, item.name)
+            item.isLive = True
 
         elif "live just nu" in item.description.lower():
             item.name = "{} [COLOR gold](live)[/COLOR]".format(item.name)
+            item.isLive = True
 
         item.media_type = mediatype.VIDEO
         season_info = result_set.get("positionInSeason")
@@ -1375,6 +1377,7 @@ class Channel(chn_class.Channel):
         # "dash-full" has HEVC and x264 video, with multi stream audio, both 5.1 and 2.0 streams
         # "dash-hbbtv-avc" has x264 multi stream audio, but only 5.1
         # "dash" has x264 single stream audio and only 2.0
+        # dashhbbtv-timeline -> Live streams that we need to prioritise.
 
         # For HLS:
         # "hls-cmaf-full" has x264/x264 with 5.1
@@ -1386,7 +1389,7 @@ class Channel(chn_class.Channel):
         if in_sweden or not item.isGeoLocked:
             supported_formats = {"hls": 10, "hls-ts-full": 12, "hls-cmaf-full": 0, "hls-cmaf-live": 1, " hls-cmaf-live-vtt": 0}
             if not is_drm_protected:
-                supported_formats.update({"dash": 3, "dash-hbbtv-avc": 4, "dashhbbtv": 4})
+                supported_formats.update({"dashhbbtv-timeline": 15, "dash": 3, "dash-hbbtv-avc": 4, "dashhbbtv": 4})
         else:
             supported_formats = {"hls": 10, "hls-ts-avc-51": 11, "hls-cmaf-live": 12}
             if not is_drm_protected:
