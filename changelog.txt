@@ -1,13 +1,15 @@
-[B]Retrospect v5.7.xx - Changelog - 2026-xx-xx[/B]
-1
-t.b.d.
+[B]Retrospect v5.7.36 - Changelog - 2026-07-14[/B]
+This minor update fixes a small number of channel-related bugs.
 
 [B]Framework related[/B]
-_None_
+* Updated: Python type hints.
 
 [B]GUI/Settings/Language related[/B]
 _None_
 
 [B]Channel related[/B]
-* Fixed: De Schatkamer added new content urls.
-* Fixed: More stream types for SVT (Fixes #1924).
+* Updated: SVT fanart.
+* Updated: TV4.se artwork.
+* Updated: UR Play artwork.
+* Fixed: Use correct live stream urls for SVT (Fixes #1924).
+* Fixed: Type-ing issues and JSON fix in openregio.
