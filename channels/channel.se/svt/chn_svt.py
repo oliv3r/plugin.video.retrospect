@@ -1,4 +1,3 @@
-# coding=utf-8  # NOSONAR
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import datetime
@@ -18,12 +17,10 @@ from resources.lib.helpers.languagehelper import LanguageHelper
 from resources.lib.helpers.htmlentityhelper import HtmlEntityHelper
 from resources.lib.streams.m3u8 import M3u8
 from resources.lib.streams.mpd import Mpd
-from resources.lib.channelinfo import ChannelInfo
 from resources.lib.addonsettings import AddonSettings
 
 from resources.lib.logger import Logger
 from resources.lib.urihandler import UriHandler
-from resources.lib.parserdata import ParserData
 
 
 class Channel(chn_class.Channel):
@@ -61,7 +58,7 @@ class Channel(chn_class.Channel):
         self._add_data_parser("#mainlist", preprocessor=self.add_live_items_and_genres)
 
         self._add_data_parser(self.__program_url,
-                              match_type=ParserData.MatchStart, json=True,
+                              match_type="MatchStart", json=True,
                               preprocessor=self.folders_or_clips,
                               parser=["data", "programAtillO", "flat"],
                               creator=self.create_api_typed_item)
@@ -254,7 +251,7 @@ class Channel(chn_class.Channel):
 
         genre_tags = "\a.: {}/{} :.".format(
             LanguageHelper.get_localized_string(LanguageHelper.Genres),
-            LanguageHelper.get_localized_string(LanguageHelper.Tags).lower()
+            "".join(LanguageHelper.get_localized_string(LanguageHelper.Tags)).lower()
         )
 
         genre_url = self.__get_api_url("MainGenres",
@@ -411,6 +408,7 @@ class Channel(chn_class.Channel):
         for r in json_data.get_value("data", "programAtillO", "selections"):
             flat += r["items"]
 
+        # pyrefly: ignore [bad-index]
         json_data.json["data"]["programAtillO"]["flat"] = flat
         return json_data, items
 
@@ -534,7 +532,7 @@ class Channel(chn_class.Channel):
 
         """
 
-        if not self.__show_folders:
+        if not self.__show_folders or not self.parentItem:
             return None
 
         if result_set.get("type", "").lower() == "upcoming":
@@ -574,8 +572,8 @@ class Channel(chn_class.Channel):
 
         """
 
-        # if not self.__show_folders:
-        #     return None
+        if not self.parentItem:
+            return None
 
         title = result_set.get("heading")
         sub_heading = result_set.get("subHeading")
@@ -705,9 +703,11 @@ class Channel(chn_class.Channel):
                 minute = start_time.tm_min
 
             item.name = "{:02}:{:02} - {}".format(hour, minute, item.name)
+            item.isLive = True
 
         elif "live just nu" in item.description.lower():
             item.name = "{} [COLOR gold](live)[/COLOR]".format(item.name)
+            item.isLive = True
 
         item.media_type = mediatype.VIDEO
         season_info = result_set.get("positionInSeason")
@@ -892,6 +892,9 @@ class Channel(chn_class.Channel):
             return self.create_api_genre_type(result_set)
 
     def extract_new_on_svt_id(self, data: str) -> Tuple[str, List[MediaItem]]:
+        if not self.parentItem:
+            return data, []
+
         if data.startswith("<"):
             new_id = Regexer.do_regex(r'/([^/]+)/nytt-pa-play', data)[0]
         else:
@@ -922,6 +925,9 @@ class Channel(chn_class.Channel):
         a lot of items are generated.
 
         """
+
+        if not self.parentItem:
+            return data, []
 
         items = []
         slug = self.parentItem.metaData["slug"]
@@ -967,8 +973,10 @@ class Channel(chn_class.Channel):
     def fetch_genre_api_data(self, data):
         if self.channelCode == "oppetarkiv" and self.parentItem is None:
             genre = "oppet-arkiv"
-        else:
+        elif self.parentItem is not None:
             genre = self.parentItem.metaData[self.__genre_id]
+        else:
+            raise ValueError("Cannot pre-fetch Genres.")
 
         url = self.__get_api_url(
             "CategoryPageQuery",
@@ -1175,6 +1183,7 @@ class Channel(chn_class.Channel):
 
             channel.update(program)
 
+        # pyrefly: ignore [bad-assignment]
         json_data.json = channel_list.values()
         return json_data, []
 
@@ -1368,6 +1377,7 @@ class Channel(chn_class.Channel):
         # "dash-full" has HEVC and x264 video, with multi stream audio, both 5.1 and 2.0 streams
         # "dash-hbbtv-avc" has x264 multi stream audio, but only 5.1
         # "dash" has x264 single stream audio and only 2.0
+        # dashhbbtv-timeline -> Live streams that we need to prioritise.
 
         # For HLS:
         # "hls-cmaf-full" has x264/x264 with 5.1
@@ -1377,11 +1387,11 @@ class Channel(chn_class.Channel):
         # LB = Low Bandwidth
 
         if in_sweden or not item.isGeoLocked:
-            supported_formats = {"hls": 10, "hls-ts-full": 12, "hls-cmaf-full": 0}
+            supported_formats = {"hls": 10, "hls-ts-full": 12, "hls-cmaf-full": 0, "hls-cmaf-live": 1, " hls-cmaf-live-vtt": 0}
             if not is_drm_protected:
-                supported_formats.update({"dash": 3, "dash-hbbtv-avc": 4, "dashhbbtv": 4})
+                supported_formats.update({"dashhbbtv-timeline": 15, "dash": 3, "dash-hbbtv-avc": 4, "dashhbbtv": 4})
         else:
-            supported_formats = {"hls": 10, "hls-ts-avc-51": 11}
+            supported_formats = {"hls": 10, "hls-ts-avc-51": 11, "hls-cmaf-live": 12}
             if not is_drm_protected:
                 supported_formats.update({"dash": 2, "dash-avc-51": 3})
 
