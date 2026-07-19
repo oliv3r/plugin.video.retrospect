@@ -2,12 +2,14 @@
 """ NLZIET channel for Retrospect. """
 
 import json
+import re
 import time
 import xbmc
 
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
-from typing import Any, ClassVar, Dict, List, Optional, Tuple, final
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union, final
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from resources.lib import chn_class, contenttype, mediatype
@@ -53,12 +55,54 @@ API_V7_CURRENT_TIME = "/v7/currenttime"
 
 # V8 API
 API_V8_PROFILE = "/v8/profile"
+API_V8_SERIES_BASE = "/v8/series/"
 
 # V9 API
+API_V9_CONTINUE_WATCHING = "/v9/continueWatching"
 API_V9_EPG_DATE = "/v9/epg/programlocations"
 API_V9_EPG_LIVE = "/v9/epg/programlocations/live"
 API_V9_ITEM_DETAIL = "/v9/item/detail"
 API_V9_LIVE_HANDSHAKE = "/v9/stream/handshake"
+API_V9_PLACEMENT = "/v9/placement/rows/{}"
+API_V9_PLACEMENT_EXPLORE_BASE = "/v9/placement/rows/explore-"
+API_V9_RECOMMEND_FILTERED = "/v9/recommend/filtered"
+API_V9_RECOMMEND_WITH = "/v9/recommend/with"
+API_V9_SEARCH = (
+    "/v9/search"
+    "?searchTerm=%s"
+    "&limit=100"
+    "&offset=0"
+    "&contentType=Movie"
+    "&contentType=Series"
+)
+API_V9_SEARCH_BASE = "/v9/search?"
+API_V9_SEASON_ALL_EPISODES = (
+    "/v9/series/{}/episodes"
+    "?seasonId={}"
+    "&limit=400"
+)
+API_V9_SERIES_EPISODES = (
+    "/v9/series/{}/episodes"
+    "?limit=100"
+    "&offset=0"
+)
+API_V9_SERIES_PLAY = "/v9/series/{}/play"
+API_V9_SERIES_BASE = "/v9/series/"
+API_V9_SERIES_SEASON_EPISODES = (
+    "/v9/series/{}/episodes"
+    "?seasonId={}"
+    "&limit=100"
+    "&offset=0"
+)
+API_V9_TRACKED_SERIES = "/v9/trackedseries"
+API_V9_VOD_HANDSHAKE = (
+    "/v9/stream/handshake"
+    "?context=OnDemand"
+    "&id={}"
+    "&drmType=Widevine"
+    "&sourceType=Dash"
+)
+API_V9_WATCH_IN_ADVANCE = "/v9/watchinadvance"
 
 # NLZIET channel defaults
 APPCONFIG_HEARTBEAT_DEFAULT = 90  # seconds
@@ -193,6 +237,103 @@ class Channel(chn_class.Channel):
             updater=self.update_replay_item,
         )
 
+        # -- VOD (on demand) parsers ----------------------------------
+
+        self._add_data_parser(
+            self._prefix_urls(API_V9_PLACEMENT_EXPLORE_BASE),
+            name="Explore category page",
+            preprocessor=self.get_explore_items,
+            requires_logon=True,
+        )
+
+        self._add_data_parser(
+            self._prefix_urls(API_V9_RECOMMEND_WITH),
+            creator=self.create_vod_item,
+            json=True,
+            name="VOD content list",
+            parser=["data"],
+            requires_logon=True,
+            updater=self.update_vod_item,
+        )
+
+        self._add_data_parser(
+            self._prefix_urls(API_V9_RECOMMEND_FILTERED),
+            creator=self.create_vod_item,
+            json=True,
+            name="Genre-filtered VOD content",
+            parser=["data"],
+            requires_logon=True,
+            updater=self.update_vod_item,
+        )
+
+        self._add_data_parser(
+            self._prefix_urls(API_V9_TRACKED_SERIES),
+            creator=self.create_vod_item,
+            json=True,
+            name="Watchlist",
+            parser=["data"],
+            requires_logon=True,
+            updater=self.update_vod_item,
+        )
+
+        self._add_data_parser(
+            self._prefix_urls(API_V9_CONTINUE_WATCHING),
+            creator=self.create_vod_item,
+            json=True,
+            name="Continue watching",
+            parser=["data"],
+            requires_logon=True,
+            updater=self.update_vod_item,
+        )
+
+        self._add_data_parser(
+            self._prefix_urls(API_V9_WATCH_IN_ADVANCE),
+            creator=self.create_vod_item,
+            json=True,
+            name="Watch in advance",
+            parser=["data"],
+            requires_logon=True,
+            updater=self.update_vod_item,
+        )
+
+        self._add_data_parser(
+            self._prefix_urls(API_V8_SERIES_BASE),
+            name="Series detail",
+            preprocessor=self.extract_series_data,
+            requires_logon=True,
+        )
+
+        self._add_data_parser(
+            self._prefix_urls(API_V9_SERIES_BASE),
+            creator=self.create_episode_item,
+            json=True,
+            name="Series episodes",
+            parser=["data"],
+            postprocessor=self.deduplicate_episode_titles,
+            preprocessor=self.extract_series_title,
+            requires_logon=True,
+            updater=self.update_vod_item,
+        )
+
+        self._add_data_parser(
+            self._prefix_urls(API_V9_SEARCH_BASE),
+            creator=self.create_search_result_item,
+            json=True,
+            name="Search results",
+            parser=["data"],
+            requires_logon=True,
+            updater=self.update_vod_item,
+        )
+
+        self._add_data_parser(
+            self._prefix_urls(f"{API_V9_LIVE_HANDSHAKE}?context=OnDemand"),
+            name="VOD stream resolver",
+            requires_logon=True,
+            updater=self.update_vod_item,
+        )
+
+        self._current_series_title: str = ""
+
         for _ in range(APPCONFIG_INIT_RETRY_MAX):
             if self._sync_appconfig():
                 break
@@ -269,6 +410,40 @@ class Channel(chn_class.Channel):
         live_tv.isLive = True
         live_tv.thumb = self.noImage
         items.append(live_tv)
+
+        search = FolderItem(
+            LanguageHelper.get_localized_string(LanguageHelper.Search),
+            self.search_url,
+            content_type=contenttype.TVSHOWS,
+        )
+        search.complete = True
+        search.dontGroup = True
+        items.append(search)
+
+        page = "kids-home" if self._profile_type() == "ChildYoung" else "home"
+        placement_url = self._prefix_urls(API_V9_PLACEMENT.format(page))
+        Logger.debug(f"NLZIET: Fetching placement rows from {placement_url}")
+
+        placement_data = UriHandler.open(
+            placement_url, additional_headers=self._request_headers, no_cache=True)
+        status = UriHandler.last_status()
+        if status.error or not placement_data:
+            Logger.warning("NLZIET: Empty placement response, skipping On Demand rows")
+            return data, items
+
+        try:
+            placement = JsonHelper(placement_data)
+        except (ValueError, TypeError):
+            Logger.warning("NLZIET: Could not parse placement response")
+            return data, items
+
+        components = placement.get_value("components") or []
+        for component in components:
+            result = self._create_placement_item(component)
+            if isinstance(result, list):
+                items.extend(result)
+            elif result:
+                items.append(result)
 
         return data, items
 
@@ -412,14 +587,6 @@ class Channel(chn_class.Channel):
         if not self.loggedOn:
             return {}
 
-        raw_config = AddonSettings.get_setting(APPCONFIG_CACHE_KEY, store=LOCAL) or "{}"
-        try:
-            config = json.loads(raw_config)
-        except (ValueError, TypeError):
-            config = {}
-        past_days = int(config.get("epgDateRangePastDays", EPG_DEFAULT_PAST_DAYS))
-        future_days = int(config.get("epgDateRangeFutureDays", EPG_DEFAULT_FUTURE_DAYS))
-
         parent = None
         if parameter_parser is not None:
             parent = MediaItem(self.channelName, self.mainListUri)
@@ -430,7 +597,7 @@ class Channel(chn_class.Channel):
         now_ts = self._get_server_time()
         today = date.fromtimestamp(now_ts)
 
-        for day_offset in range(-past_days, future_days + 1):
+        for day_offset in range(-EPG_DEFAULT_PAST_DAYS, EPG_DEFAULT_FUTURE_DAYS + 1):
             day = (today + timedelta(days=day_offset)).isoformat()
 
             raw = UriHandler.open(
@@ -516,7 +683,7 @@ class Channel(chn_class.Channel):
         if (replay_items and
             parameter_parser is not None and
             parent is not None):
-            parameter_parser.pickler.store_media_items(parent.guid, parent, replay_items)
+            parameter_parser.pickler.store_media_items(parent.guid or "", parent, replay_items)
 
         return epg
 
@@ -578,7 +745,7 @@ class Channel(chn_class.Channel):
             items.append(item)
 
         if items:
-            parameter_parser.pickler.store_media_items(parent.guid, parent, items)
+            parameter_parser.pickler.store_media_items(parent.guid or "", parent, items)
 
         return streams
 
@@ -853,7 +1020,9 @@ class Channel(chn_class.Channel):
 
             if error_type == "MaximumStreamsReached":
                 max_streams = str(error.get("data", {}).get("maximumNumberOfStreams", "?"))
-                msg = LanguageHelper.get_localized_string(LanguageHelper.MaxStreamsReached).replace("{0}", max_streams)
+                msg = LanguageHelper.get_localized_string(LanguageHelper.MaxStreamsReached)
+                if isinstance(msg, str):
+                    msg = msg.replace("{0}", max_streams)
             elif error_type == "MissingSubscriptionFeature":
                 msg = LanguageHelper.get_localized_string(LanguageHelper.MissingSubscription)
             elif error_type == "Unauthorized":
@@ -1050,6 +1219,691 @@ class Channel(chn_class.Channel):
         return item
 
 
+    # -- VOD content (movies, series, trending) -----------------------------
+
+    # Explore/placement row component types that render as navigable folders.
+    _PLACEMENT_TYPES: ClassVar[frozenset] = frozenset({
+        "ItemTileList",
+        "ItemTileListWithFolder",
+        "PersonalizedProgramLocationsLive",
+    })
+
+
+    def get_explore_items(self, data: str) -> Tuple[str, List[MediaItem]]:
+        """
+        Create folder items for an explore category page.
+
+        Turns each ``ItemTileList``/``Placements`` component of a placement
+        response into a navigable genre folder or nested explore folder.
+
+        :param data: Raw JSON response from an explore placement page.
+
+        :return: A tuple of the data and a list of MediaItems.
+        """
+
+        items: List[MediaItem] = []
+        if not data:
+            return data, items
+
+        try:
+            placement = JsonHelper(data)
+        except (ValueError, TypeError):
+            return data, items
+
+        components = placement.get_value("components") or []
+        for component in components:
+            result = self._create_placement_item(component)
+            if isinstance(result, list):
+                items.extend(result)
+            elif result:
+                items.append(result)
+
+        return data, items
+
+
+    def _create_placement_item(
+            self, component: dict) -> Union[FolderItem, List[FolderItem], None]:
+        """
+        Create a FolderItem from a placement row component.
+
+        ``Placements`` components are expanded into individual explore-page
+        folders instead of being returned as a single item.
+
+        :param component: A single component from a placement response.
+
+        :return: A FolderItem, a list of FolderItems, or None.
+        """
+
+        comp_type = component.get("type", "")
+
+        if comp_type == "Placements":
+            return self._create_explore_items(component.get("items", []))
+
+        url = component.get("url") or component.get("parameters", {}).get("url")
+        title = component.get("title") or component.get("parameters", {}).get("title")
+        if comp_type not in Channel._PLACEMENT_TYPES or not url or not title:
+            return None
+
+        item = FolderItem(title, self._prefix_urls(url), content_type=contenttype.VIDEOS)
+        if comp_type == "PersonalizedProgramLocationsLive":
+            item.isLive = True
+            item.dontGroup = True
+        item.complete = True
+        item.HttpHeaders = self._nlziet_headers
+        return item
+
+
+    def _create_explore_items(self, placement_items: List[dict]) -> List[FolderItem]:
+        """
+        Create folder items for each explore category.
+
+        :param placement_items: Items from a ``Placements`` component.
+
+        :return: A list of FolderItems for explore pages.
+        """
+
+        items: List[FolderItem] = []
+        for entry in placement_items:
+            entry_id = entry.get("id")
+            title = entry.get("title")
+            if not entry_id or not title:
+                continue
+            url = self._prefix_urls(API_V9_PLACEMENT.format(entry_id))
+            item = FolderItem(title, url, content_type=contenttype.TVSHOWS)
+            item.dontGroup = True
+            item.complete = True
+            item.HttpHeaders = self._nlziet_headers
+            items.append(item)
+        return items
+
+
+    def create_vod_item(self, result_set: dict) -> Optional[MediaItem]:
+        """
+        Create an item from a recommend/watchlist/continue-watching response entry.
+
+        Items without a ``type`` field are treated as series folders. Items
+        tagged ``"Movie"`` become playable movie items. Everything else
+        becomes a playable episode item.
+
+        :param result_set: A single ``data[]`` entry (contains ``content``).
+
+        :return: A MediaItem, FolderItem, or None.
+        """
+
+        content = result_set.get("content") or {}
+        if not content:
+            return None
+
+        if content.get("isAvailable") is False:
+            return None
+
+        item_id = content.get("id")
+        title = content.get("title", "")
+        if not item_id or not title:
+            return None
+
+        item_type = content.get("type")
+        tags = content.get("tags") or []
+        is_movie = "Movie" in tags
+
+        item: MediaItem
+        if item_type is None or item_type == "Series":
+            item = FolderItem(title, self._prefix_urls(f"{API_V8_SERIES_BASE}{item_id}"),
+                               content_type=contenttype.EPISODES)
+            item.complete = True
+            item.dontGroup = True
+        elif is_movie:
+            item = MediaItem(title, self._vod_handshake_url(item_id), media_type=mediatype.MOVIE)
+            item.isDrmProtected = True
+            item.isGeoLocked = True
+            item.dontGroup = True
+        else:
+            item = MediaItem(title, self._vod_handshake_url(item_id), media_type=mediatype.EPISODE)
+            item.isDrmProtected = True
+            item.isGeoLocked = True
+            item.dontGroup = True
+
+        numbering = content.get("formattedEpisodeNumbering") or ""
+        if numbering:
+            match = re.match(r"S(\d+):A(\d+)", numbering)
+            if match:
+                item.set_season_info(int(match.group(1)), int(match.group(2)))
+
+        self._set_vod_metadata(item, content)
+        item.HttpHeaders = self._nlziet_headers
+        return item
+
+
+    def extract_series_title(self, data: str) -> Tuple[str, List[MediaItem]]:
+        """
+        Preprocessor for ``/v9/series/{id}/episodes`` URLs.
+
+        Reads the series title stored in the parent season folder's metaData
+        (set by :meth:`extract_series_data`) and caches it on this instance
+        so :meth:`create_episode_item` can populate ``tv_show_title`` for
+        Up Next.
+
+        :param data: Raw JSON response, passed through unchanged.
+
+        :return: A tuple of the data and an empty item list.
+        """
+
+        series_title = ""
+        if self.parentItem:
+            series_title = self.parentItem.metaData.get("nlziet:series_title", "")
+        self._current_series_title = series_title
+        return data, []
+
+
+    def create_episode_item(self, result_set: Union[str, dict]) -> Optional[MediaItem]:
+        """
+        Create a playable item from a ``/v9/series/{id}/episodes`` entry.
+
+        :param result_set: A single ``data[]`` entry.
+
+        :return: A playable MediaItem or None.
+        """
+
+        if not isinstance(result_set, dict):
+            return None
+
+        content = result_set.get("content") or {}
+        if not content:
+            return None
+
+        item_id = content.get("id")
+        title = content.get("title") or content.get("subtitle", "")
+        if not item_id or not title:
+            return None
+
+        item = MediaItem(title, self._vod_handshake_url(item_id), media_type=mediatype.EPISODE,
+                          tv_show_title=self._current_series_title or None)
+        item.isDrmProtected = True
+        item.isGeoLocked = True
+        item.dontGroup = True
+
+        subtitle = content.get("subtitle") or ""
+        numbering = content.get("formattedEpisodeNumbering") or ""
+        match = re.match(r"S(\d+):A(\d+)", numbering or subtitle)
+        if match:
+            item.set_season_info(int(match.group(1)), int(match.group(2)))
+            clean = re.sub(r"^S\d+:A\d+\s*", "", subtitle)
+            if clean and clean != title:
+                item.metaData["nlziet:subtitle"] = clean
+        elif subtitle and subtitle != title:
+            item.metaData["nlziet:subtitle"] = subtitle
+
+        self._set_vod_metadata(item, content)
+        item.HttpHeaders = self._nlziet_headers
+        return item
+
+
+    def deduplicate_episode_titles(self, data: Any, items: List[MediaItem]) -> List[MediaItem]:
+        """
+        Disambiguate duplicate episode titles using subtitles.
+
+        When all episodes share the same title (common for kids shows), each
+        title is replaced by its subtitle. When only some titles are
+        duplicated (2+), those get ``subtitle (title)`` format while unique
+        titles are left untouched.
+
+        :param data:  Unused; required by the post-processor signature.
+        :param items: The items produced by the parser/creator.
+
+        :return: The (potentially modified) list of items.
+        """
+
+        episodes = [i for i in items if not i.is_folder]
+        if len(episodes) < 2:
+            return items
+
+        counts = Counter(e.name for e in episodes)
+        unique_titles = len(counts)
+
+        if unique_titles == 1:
+            for episode in episodes:
+                subtitle = episode.metaData.get("nlziet:subtitle")
+                if subtitle:
+                    episode.name = f"{subtitle} ({episode.name})"
+        elif any(c >= 2 for c in counts.values()):
+            for episode in episodes:
+                if counts[episode.name] >= 2:
+                    subtitle = episode.metaData.get("nlziet:subtitle")
+                    if subtitle:
+                        episode.name = f"{subtitle} ({episode.name})"
+
+        return items
+
+
+    def create_search_result_item(self, result_set: dict) -> Optional[MediaItem]:
+        """
+        Create an item from a ``/v9/search`` response entry.
+
+        The search response uses ``type`` values ``"Movie"`` and ``"Series"``
+        (different from the recommend endpoints).
+
+        :param result_set: A single ``data[]`` entry.
+
+        :return: A MediaItem, FolderItem, or None.
+        """
+
+        content = result_set.get("content") or {}
+        if not content:
+            return None
+
+        item_id = content.get("id")
+        title = content.get("title", "")
+        item_type = content.get("type", "")
+        if not item_id or not title:
+            return None
+
+        tags = content.get("tags") or []
+
+        item: MediaItem
+        if item_type == "Series" or item_type is None:
+            item = FolderItem(title, self._prefix_urls(f"{API_V8_SERIES_BASE}{item_id}"),
+                               content_type=contenttype.EPISODES)
+            item.complete = True
+            item.dontGroup = True
+        elif item_type == "Movie" or "Movie" in tags:
+            item = MediaItem(title, self._vod_handshake_url(item_id), media_type=mediatype.MOVIE)
+            item.isDrmProtected = True
+            item.isGeoLocked = True
+            item.dontGroup = True
+        else:
+            item = MediaItem(title, self._vod_handshake_url(item_id), media_type=mediatype.EPISODE)
+            item.isDrmProtected = True
+            item.isGeoLocked = True
+            item.dontGroup = True
+
+        self._set_vod_metadata(item, content)
+        item.HttpHeaders = self._nlziet_headers
+        return item
+
+
+    def extract_series_data(self, data: str) -> Tuple[str, List[MediaItem]]:
+        """
+        Preprocessor for ``/v8/series/{id}`` detail URLs.
+
+        Parses the season list from the series detail response and returns
+        them as folder items pointing to season-episode URLs. The downstream
+        parser is skipped because the data is replaced with an empty string.
+
+        Shortcut items (Continue Watching, Most Recent Episode, First
+        Episode) are prepended before the season folders so users can jump
+        straight to an episode without drilling into seasons.
+
+        :param data: Raw JSON response.
+
+        :return: A tuple of the (empty) data and a list of items.
+        """
+
+        json_data = JsonHelper(data)
+        # The API may return {"content": {...}} or {"data": {"content": {...}}}.
+        series_content = json_data.get_value("content", fallback=None)
+        if not series_content:
+            series_content = json_data.get_value("data", "content", fallback={})
+        if not series_content:
+            return "", []
+
+        series_id = series_content.get("id", "")
+        series_title = series_content.get("title", "")
+        # API returns seasons newest-first; reverse so seasons[0] = oldest
+        # (used by shortcuts) and present newest-first to the user below.
+        seasons = list(reversed(series_content.get("seasons", [])))
+
+        items: List[MediaItem] = []
+        if seasons:
+            # Present newest season first in the folder listing.
+            for season in reversed(seasons):
+                season_id = season.get("id")
+                season_title = season.get("title", "")
+                if not season_id:
+                    continue
+
+                url = self._prefix_urls(
+                    API_V9_SERIES_SEASON_EPISODES.format(series_id, season_id))
+                folder = FolderItem(season_title or series_title, url,
+                                     content_type=contenttype.EPISODES)
+                folder.complete = True
+                folder.metaData["nlziet:series_title"] = series_title
+                items.append(folder)
+        else:
+            # Seasonless series — fetch episodes directly to avoid an
+            # intermediate folder that just duplicates the series name.
+            url = self._prefix_urls(API_V9_SERIES_EPISODES.format(series_id))
+            episodes_item = MediaItem(series_title, url, media_type=mediatype.VIDEO)
+            episodes_item.metaData["nlziet:series_title"] = series_title
+            episodes = self.process_folder_list(episodes_item)
+            items.extend(episodes)
+
+        shortcuts = self._build_episode_shortcuts(series_id, seasons)
+        # Return empty data so the parser does not run again.
+        return "", shortcuts + items
+
+
+    def update_vod_item(self, item: MediaItem) -> MediaItem:
+        """
+        Fetch the DASH stream URL for a VOD or search-result item.
+
+        :param item: The item to update.
+
+        :return: The updated item.
+        """
+
+        Logger.debug(f"Updating VOD stream for: {item.name}")
+        stream = self._configure_drm_stream(item.url)
+        if stream:
+            item.streams.append(stream)
+            item.complete = True
+        return item
+
+
+    def search_site(self, url: Optional[str] = None,
+                    needle: Optional[str] = None) -> List[MediaItem]:
+        """
+        Search the NLZIET catalogue.
+
+        :param url:    Unused; the search URL is constructed here.
+        :param needle: The search query.
+
+        :return: A list of search result items.
+        """
+
+        return chn_class.Channel.search_site(self, self._prefix_urls(API_V9_SEARCH), needle)
+
+
+    def _build_episode_shortcuts(self, series_id: str,
+                                 seasons: List[dict]) -> List[MediaItem]:
+        """
+        Build Continue / Most Recent / First episode shortcut items.
+
+        :param series_id: The series ID.
+        :param seasons:   Season dicts from the series detail response,
+                          oldest-first (already reversed by the caller).
+
+        :return: Up to three playable shortcut items.
+        """
+
+        if not series_id or not seasons:
+            return []
+
+        continue_item = self._fetch_continue_item(series_id)
+
+        oldest_season_id = seasons[0].get("id", "")
+        newest_season_id = seasons[-1].get("id", "")
+
+        newest_eps = self._fetch_season_episodes(series_id, newest_season_id)
+        if oldest_season_id != newest_season_id:
+            oldest_eps = self._fetch_season_episodes(series_id, oldest_season_id)
+        else:
+            oldest_eps = newest_eps
+
+        first_item = Channel._pick_boundary_episode(oldest_eps, pick_first=True)
+        recent_item = Channel._pick_boundary_episode(newest_eps, pick_first=False)
+
+        if first_item and recent_item and first_item.url == recent_item.url:
+            recent_item = None
+
+        if first_item:
+            first_item.name = Channel._shortcut_label(first_item, LanguageHelper.FirstEpisode)
+        if recent_item:
+            recent_item.name = Channel._shortcut_label(
+                recent_item, LanguageHelper.MostRecentEpisode)
+
+        shortcuts: List[MediaItem] = []
+        if continue_item:
+            first_id = first_item.url if first_item else None
+            if continue_item.url != first_id:
+                shortcuts.append(continue_item)
+        if recent_item:
+            shortcuts.append(recent_item)
+        if first_item:
+            shortcuts.append(first_item)
+
+        return shortcuts
+
+
+    @staticmethod
+    def _shortcut_label(item: MediaItem, label_id: int) -> str:
+        """
+        Build a shortcut display name like ``First Episode: Title``.
+
+        :param item:     The shortcut item with metaData.
+        :param label_id: LanguageHelper string ID for the label.
+
+        :return: The formatted name.
+        """
+
+        label = str(LanguageHelper.get_localized_string(label_id))
+        ep_title = item.metaData.get("nlziet:ep_title", "")
+        if ep_title:
+            return f"{label}: {ep_title}"
+        return label
+
+
+    def _fetch_continue_item(self, series_id: str) -> Optional[MediaItem]:
+        """
+        Fetch the "Continue Watching" episode via the series play endpoint.
+
+        :param series_id: The series ID.
+
+        :return: A playable MediaItem or None.
+        """
+
+        url = self._prefix_urls(API_V9_SERIES_PLAY.format(series_id))
+        data = UriHandler.open(url, additional_headers=self._request_headers, no_cache=True)
+        status = UriHandler.last_status()
+        if status.error or not data:
+            return None
+
+        try:
+            play_json = JsonHelper(data)
+        except (ValueError, TypeError):
+            return None
+        content = play_json.get_value("content", fallback=None)
+        if not content:
+            return None
+
+        content_id = content.get("id")
+        ep_title = content.get("title", "")
+        if not content_id:
+            return None
+
+        label = LanguageHelper.get_localized_string(LanguageHelper.ContinueWatching)
+        name = f"{label}: {ep_title}" if ep_title else label
+        item = MediaItem(name, self._vod_handshake_url(content_id), media_type=mediatype.EPISODE)
+        item.isDrmProtected = True
+        item.isGeoLocked = True
+        item.dontGroup = True
+        self._set_vod_metadata(item, content)
+        item.HttpHeaders = self._nlziet_headers
+        return item
+
+
+    def _fetch_season_episodes(self, series_id: str,
+                               season_id: str) -> List[Tuple[str, MediaItem]]:
+        """
+        Fetch all episodes for a season.
+
+        :param series_id: The series ID.
+        :param season_id: The season ID.
+
+        :return: List of ``(broadcastAt, item)`` tuples in API response
+                 order. Date strings are ISO-8601 or empty when absent.
+        """
+
+        if not season_id:
+            return []
+
+        url = self._prefix_urls(API_V9_SEASON_ALL_EPISODES.format(series_id, season_id))
+        data = UriHandler.open(url, additional_headers=self._request_headers, no_cache=True)
+        status = UriHandler.last_status()
+        if status.error or not data:
+            return []
+
+        try:
+            episodes = JsonHelper(data).get_value("data", fallback=[])
+        except (ValueError, TypeError):
+            return []
+
+        result: List[Tuple[str, MediaItem]] = []
+        for episode in episodes:
+            content = episode.get("content", {})
+            content_id = content.get("id")
+            if not content_id:
+                continue
+
+            subtitle = content.get("subtitle") or content.get("title", "")
+            item = MediaItem(subtitle, self._vod_handshake_url(content_id),
+                             media_type=mediatype.EPISODE)
+            item.isDrmProtected = True
+            item.isGeoLocked = True
+            item.dontGroup = True
+            item.metaData["nlziet:ep_title"] = subtitle
+            self._set_vod_metadata(item, content)
+            item.HttpHeaders = self._nlziet_headers
+            broadcast_at = content.get("broadcastAt") or ""
+            result.append((broadcast_at, item))
+
+        return result
+
+
+    @staticmethod
+    def _pick_boundary_episode(eps: List[Tuple[str, MediaItem]],
+                               pick_first: bool) -> Optional[MediaItem]:
+        """
+        Pick the earliest or most-recent episode from API results.
+
+        The API always returns episodes in a logically correct order
+        (episode numbers are monotonic), but the direction varies per
+        series: some are newest-first (descending), others oldest-first
+        (ascending).
+
+        Direction is detected by checking whether ``broadcastAt``
+        timestamps are monotonically increasing or decreasing. When
+        ``broadcastAt`` is non-monotonic (re-broadcasts, bulk imports) or
+        absent, this defaults to descending — the most common ordering
+        across the NLZIET catalogue.
+
+        :param eps:        (broadcastAt, item) tuples in API response order.
+        :param pick_first: True for the earliest episode; False for the
+                           most-recent.
+
+        :return: The selected MediaItem, or None if ``eps`` is empty.
+        """
+
+        if not eps:
+            return None
+        if len(eps) == 1:
+            return eps[0][1]
+
+        ascending = Channel._is_ascending(eps)
+
+        if pick_first:
+            return eps[0][1] if ascending else eps[-1][1]
+        return eps[-1][1] if ascending else eps[0][1]
+
+
+    @staticmethod
+    def _is_ascending(eps: List[Tuple[str, MediaItem]]) -> bool:
+        """
+        Detect whether the API returned episodes oldest-first.
+
+        Checks ``broadcastAt`` monotonicity: if every adjacent pair has a
+        non-decreasing timestamp the list is ascending; if non-increasing
+        it is descending. Non-monotonic or missing timestamps default to
+        descending (the most common API ordering).
+
+        :param eps: (broadcastAt, item) tuples.
+
+        :return: True if the episode list is oldest-first (ascending).
+        """
+
+        dates = [ba for ba, _ in eps if ba]
+        if len(dates) < 2:
+            return False
+
+        is_asc = all(dates[i] <= dates[i + 1] for i in range(len(dates) - 1))
+        if is_asc:
+            return True
+
+        # Not ascending — could be descending or non-monotonic; both → False.
+        return False
+
+
+    def _vod_handshake_url(self, content_id: str) -> str:
+        """
+        Build a v9 stream handshake URL for on-demand playback.
+
+        :param content_id: The content ID.
+
+        :return: The handshake URL.
+        """
+
+        return self._prefix_urls(API_V9_VOD_HANDSHAKE.format(content_id))
+
+
+    def _set_vod_metadata(self, item: MediaItem, content: dict) -> None:
+        """
+        Set common metadata fields on a VOD item.
+
+        :param item:    The item to update.
+        :param content: The ``content`` dict from the API response.
+        """
+
+        subtitle = content.get("subtitle") or ""
+        description = content.get("description") or ""
+        if subtitle and description and subtitle != description:
+            description = f"[B]{subtitle}[/B]\n{description}"
+        elif not description:
+            description = subtitle
+        availability = content.get("formattedAvailabilityWindow") or ""
+        if availability and description:
+            description = f"{description}\n\n{availability}"
+        if description:
+            item.description = description
+
+        image = content.get("image") or {}
+        item.thumb = image.get("landscapeUrl") or image.get("portraitUrl") or item.thumb
+        item.poster = image.get("portraitUrl") or item.poster
+
+        logo = content.get("logo") or {}
+        if logo.get("normalUrl"):
+            item.icon = logo["normalUrl"]
+
+        provider = content.get("contentProvider") or ""
+        if provider:
+            item.set_info_label("Studio", provider)
+
+        duration = content.get("formattedDuration") or ""
+        if duration:
+            item.set_info_label(MediaItem.LabelDuration, Channel._parse_duration(duration))
+
+        self._apply_broadcast_date(item, content.get("broadcastedAt"))
+        self._apply_expire_date(item, content.get("availableUntil"))
+
+
+    @staticmethod
+    def _parse_duration(formatted: str) -> int:
+        """
+        Parse a formatted duration string like ``"1u 23m"`` into seconds.
+
+        :param formatted: Duration string from the API.
+
+        :return: Duration in seconds, or 0 if unparseable.
+        """
+
+        total = 0
+        hours = re.search(r"(\d+)\s*u", formatted)
+        if hours:
+            total += int(hours.group(1)) * 3600
+        minutes = re.search(r"(\d+)\s*m", formatted)
+        if minutes:
+            total += int(minutes.group(1)) * 60
+        return total
+
+
     # -- Profile handling -------------------------------------------------
 
     def _get_profile_id(self) -> str:
@@ -1163,8 +2017,8 @@ class Channel(chn_class.Channel):
 
         options = [p["displayName"] for p in profiles]
         label = LanguageHelper.get_localized_string(LanguageHelper.SelectProfile)
-        selected = XbmcWrapper.show_selection_dialog(label, options)
-        if selected < 0:
+        selected = XbmcWrapper.show_selection_dialog(str(label), options)
+        if not isinstance(selected, int) or selected < 0:
             Logger.info("NLZIET: Profile selection canceled")
             return False
 
@@ -1193,7 +2047,7 @@ class Channel(chn_class.Channel):
             self.log_off()
 
 
-    def log_on(self) -> Optional[bool]:
+    def log_on(self) -> bool:
         """
         Authenticate and set up the session.
 
@@ -1221,7 +2075,8 @@ class Channel(chn_class.Channel):
             welcome = LanguageHelper.get_localized_string(LanguageHelper.WelcomeUser)
             display_name = (result.username or
                             LanguageHelper.get_localized_string(LanguageHelper.UnknownUser))
-            XbmcWrapper.show_dialog(self.channelName, welcome.replace("{0}", display_name))
+            if isinstance(welcome, str):
+                XbmcWrapper.show_dialog(self.channelName, welcome.replace("{0}", str(display_name)))
 
         if self._select_profile():
             return True

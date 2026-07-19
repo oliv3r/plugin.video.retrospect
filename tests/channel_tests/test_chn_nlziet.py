@@ -16,6 +16,8 @@ if not hasattr(_xbmcgui, "WindowXMLDialog"):
     _xbmcgui.WindowXMLDialog = _FakeWindowXMLDialog  # type: ignore[attr-defined]
     sys.modules["xbmcgui"].WindowXMLDialog = _FakeWindowXMLDialog  # type: ignore[attr-defined]
 
+from resources.lib import mediatype
+from resources.lib.mediaitem import FolderItem, MediaItem
 from resources.lib.urihandler import UriHandler, UriStatus
 from resources.lib.authentication.nlziethandler import DEVICE_FLOW_USER_AGENT
 from .channeltest import ChannelTest
@@ -75,13 +77,31 @@ class TestNlzietChannel(ChannelTest):
 
 
     def test_initial_folder_items_returns_live_tv_folder_when_logged_on(self) -> None:
-        """SUCCESS → returns one isLive FolderItem for Live TV."""
+        """SUCCESS → returns Live TV and Search when placement fetch is empty."""
 
         with patch.object(type(self.channel), "loggedOn",
-                          new_callable=PropertyMock, return_value=True):
+                          new_callable=PropertyMock, return_value=True), \
+                patch("resources.lib.urihandler.UriHandler.open", return_value=""):
             _, items = self.channel.get_initial_folder_items("")
-        self.assertEqual(len(items), 1)
+        self.assertEqual(len(items), 2)
         self.assertTrue(items[0].isLive)
+        self.assertIn("search", items[1].url.lower())
+
+
+    def test_initial_folder_items_includes_placement_rows(self) -> None:
+        """SUCCESS → placement components are turned into On Demand folders."""
+
+        placement_response = json.dumps({"components": [
+            {"type": "ItemTileList", "title": "Trending",
+             "url": "https://api.nlziet.nl/v9/recommend/with?contextName=trending"},
+        ]})
+        with patch.object(type(self.channel), "loggedOn",
+                          new_callable=PropertyMock, return_value=True), \
+                patch("resources.lib.urihandler.UriHandler.open",
+                      return_value=placement_response):
+            _, items = self.channel.get_initial_folder_items("")
+        titles = [i.name for i in items]
+        self.assertIn("Trending", titles)
 
 
     def test_service_interval_default(self) -> None:
@@ -1265,6 +1285,766 @@ class TestNlzietChannelUnit(ChannelTest):
                 code=200, url=None, error=False, reason="OK")
             result = self.channel._get_server_time()
         self.assertEqual(result, 1234567890.0)
+
+    # -- create_vod_item -----------------------------------------------
+
+    def test_create_vod_item_series(self) -> None:
+        """SUCCESS → items without a type field become series FolderItems."""
+
+        result_set = {"content": {
+            "id": "abc123", "title": "Test Series",
+            "image": {"portraitUrl": "https://x/p.jpg", "landscapeUrl": "https://x/l.jpg"},
+            "logo": {"normalUrl": "https://x/logo.png"},
+            "tags": [],
+        }}
+        item = self.channel.create_vod_item(result_set)
+        self.assertIsInstance(item, FolderItem)
+        self.assertIn("/v8/series/abc123", item.url)
+        self.assertEqual(item.name, "Test Series")
+
+
+    def test_create_vod_item_movie(self) -> None:
+        """SUCCESS → items tagged 'Movie' become playable MediaItems."""
+
+        result_set = {"content": {
+            "id": "mov456", "title": "Test Movie", "type": "Epg",
+            "description": "A great movie.",
+            "formattedDuration": "2u 10m",
+            "tags": ["Movie"],
+            "image": {"portraitUrl": None, "landscapeUrl": "https://x/thumb.jpg"},
+            "logo": {"normalUrl": "https://x/logo.png"},
+            "contentProvider": "Rtl",
+            "broadcastedAt": "2026-02-13T20:27:18+01:00",
+            "availableUntil": "2026-02-22T00:05:37+01:00",
+            "formattedAvailabilityWindow": "Nog 1 dag beschikbaar",
+            "isAvailable": True,
+        }}
+        item = self.channel.create_vod_item(result_set)
+        self.assertIsInstance(item, MediaItem)
+        self.assertEqual(item.media_type, mediatype.MOVIE)
+        self.assertIn("/v9/stream/handshake", item.url)
+        self.assertIn("context=OnDemand", item.url)
+        self.assertIn("id=mov456", item.url)
+        self.assertTrue(item.isGeoLocked)
+        self.assertIn("A great movie.", item.description)
+        self.assertIn("Nog 1 dag beschikbaar", item.description)
+        self.assertEqual(item.thumb, "https://x/thumb.jpg")
+        self.assertEqual(item.icon, "https://x/logo.png")
+
+
+    def test_create_vod_item_episode(self) -> None:
+        """SUCCESS → 'Vod' items without the Movie tag become episode MediaItems."""
+
+        result_set = {"content": {
+            "id": "ep789", "title": "Test Show", "type": "Vod",
+            "subtitle": "Afl. 22", "tags": ["NewEpisode"],
+            "image": {}, "logo": {}, "isAvailable": True,
+        }}
+        item = self.channel.create_vod_item(result_set)
+        self.assertIsInstance(item, MediaItem)
+        self.assertEqual(item.media_type, mediatype.EPISODE)
+
+
+    def test_create_vod_item_unavailable_skipped(self) -> None:
+        """SUCCESS → isAvailable=False returns None."""
+
+        result_set = {"content": {
+            "id": "gone", "title": "Gone Movie", "type": "Vod",
+            "tags": [], "isAvailable": False, "image": {}, "logo": {},
+        }}
+        self.assertIsNone(self.channel.create_vod_item(result_set))
+
+
+    def test_create_vod_item_empty_content(self) -> None:
+        """SUCCESS → empty/missing content returns None."""
+
+        self.assertIsNone(self.channel.create_vod_item({"content": {}}))
+        self.assertIsNone(self.channel.create_vod_item({}))
+
+
+    def test_create_vod_item_episode_numbering(self) -> None:
+        """SUCCESS → formattedEpisodeNumbering sets season/episode as ints."""
+
+        result_set = {"content": {
+            "id": "ep-num", "title": "Some Show", "type": "Vod", "tags": [],
+            "formattedEpisodeNumbering": "S02:A05",
+            "image": {}, "logo": {}, "isAvailable": True,
+        }}
+        item = self.channel.create_vod_item(result_set)
+        self.assertEqual(item.season, 2)
+        self.assertEqual(item.episode, 5)
+
+
+    def test_create_vod_item_null_numbering(self) -> None:
+        """SUCCESS → a null formattedEpisodeNumbering does not raise."""
+
+        result_set = {"content": {
+            "id": "null-num", "title": "Null Numbering", "type": "Vod", "tags": [],
+            "formattedEpisodeNumbering": None, "image": {}, "logo": {}, "isAvailable": True,
+        }}
+        self.assertIsNotNone(self.channel.create_vod_item(result_set))
+
+    # -- create_episode_item ---------------------------------------------
+
+    def test_create_episode_item(self) -> None:
+        """SUCCESS → season/episode parsed from formattedEpisodeNumbering."""
+
+        result_set = {"content": {
+            "id": "epid", "title": "Episode Title", "subtitle": "Afl. 3",
+            "formattedEpisodeNumbering": "S01:A03", "formattedDuration": "45m",
+            "description": "Episode plot.",
+            "image": {"portraitUrl": None, "landscapeUrl": "https://x/ep.jpg"},
+            "logo": {"normalUrl": None}, "isAvailable": True,
+        }}
+        item = self.channel.create_episode_item(result_set)
+        self.assertIsInstance(item, MediaItem)
+        self.assertEqual(item.season, 1)
+        self.assertEqual(item.episode, 3)
+        self.assertTrue(item.isDrmProtected)
+
+
+    def test_create_episode_item_no_numbering(self) -> None:
+        """SUCCESS → episodes without formattedEpisodeNumbering still work."""
+
+        result_set = {"content": {
+            "id": "epid2", "title": "Unnamed Episode", "image": {}, "logo": {}, "isAvailable": True,
+        }}
+        item = self.channel.create_episode_item(result_set)
+        self.assertEqual(item.name, "Unnamed Episode")
+
+
+    def test_create_episode_item_numbering_from_subtitle(self) -> None:
+        """SUCCESS → numbering parsed from subtitle when formattedEpisodeNumbering is absent."""
+
+        result_set = {"content": {
+            "id": "ep-sub", "title": "Patience", "subtitle": "S1:A6 Pandora's box",
+            "image": {}, "logo": {},
+        }}
+        item = self.channel.create_episode_item(result_set)
+        self.assertEqual(item.season, 1)
+        self.assertEqual(item.episode, 6)
+        self.assertEqual(item.metaData.get("nlziet:subtitle"), "Pandora's box")
+
+
+    def test_create_episode_item_dontgroup(self) -> None:
+        """SUCCESS → episode items have dontGroup set to preserve API order."""
+
+        result_set = {"content": {
+            "id": "ep-dg", "title": "Show", "subtitle": "Sub", "image": {}, "logo": {},
+        }}
+        item = self.channel.create_episode_item(result_set)
+        self.assertTrue(item.dontGroup)
+
+
+    def test_create_episode_item_tv_show_title(self) -> None:
+        """SUCCESS → episode items inherit tv_show_title from _current_series_title."""
+
+        self.channel._current_series_title = "My Series"
+        result_set = {"content": {"id": "ep-tvt", "title": "An Episode", "image": {}, "logo": {}}}
+        item = self.channel.create_episode_item(result_set)
+        self.assertEqual(item.tv_show_title, "My Series")
+
+
+    def test_create_episode_item_no_series_title(self) -> None:
+        """SUCCESS → episode items work without a cached series title."""
+
+        self.channel._current_series_title = ""
+        result_set = {"content": {"id": "ep-nst", "title": "An Episode", "image": {}, "logo": {}}}
+        item = self.channel.create_episode_item(result_set)
+        self.assertFalse(item.tv_show_title)
+
+
+    def test_create_episode_item_empty_content(self) -> None:
+        """SUCCESS → empty/missing content returns None."""
+
+        self.assertIsNone(self.channel.create_episode_item({"content": {}}))
+        self.assertIsNone(self.channel.create_episode_item({}))
+
+    # -- deduplicate_episode_titles ----------------------------------------
+
+    def test_deduplicate_episode_titles_all_identical(self) -> None:
+        """SUCCESS → identical titles are replaced by their subtitle."""
+
+        e1 = MediaItem("Show", "https://x/1", media_type=mediatype.EPISODE)
+        e1.metaData["nlziet:subtitle"] = "Afl. 1"
+        e2 = MediaItem("Show", "https://x/2", media_type=mediatype.EPISODE)
+        e2.metaData["nlziet:subtitle"] = "Afl. 2"
+        items = self.channel.deduplicate_episode_titles("", [e1, e2])
+        self.assertEqual(items[0].name, "Afl. 1 (Show)")
+        self.assertEqual(items[1].name, "Afl. 2 (Show)")
+
+
+    def test_deduplicate_episode_titles_partial(self) -> None:
+        """SUCCESS → only duplicated titles (2+) are disambiguated; unique ones untouched."""
+
+        e1 = MediaItem("Dup", "https://x/1", media_type=mediatype.EPISODE)
+        e1.metaData["nlziet:subtitle"] = "Afl. 1"
+        e2 = MediaItem("Dup", "https://x/2", media_type=mediatype.EPISODE)
+        e2.metaData["nlziet:subtitle"] = "Afl. 2"
+        e3 = MediaItem("Unique", "https://x/3", media_type=mediatype.EPISODE)
+        e3.metaData["nlziet:subtitle"] = "Afl. 3"
+        items = self.channel.deduplicate_episode_titles("", [e1, e2, e3])
+        self.assertEqual(items[0].name, "Afl. 1 (Dup)")
+        self.assertEqual(items[1].name, "Afl. 2 (Dup)")
+        self.assertEqual(items[2].name, "Unique")
+
+
+    def test_deduplicate_episode_titles_all_unique(self) -> None:
+        """SUCCESS → all-unique titles are left unmodified."""
+
+        e1 = MediaItem("One", "https://x/1", media_type=mediatype.EPISODE)
+        e2 = MediaItem("Two", "https://x/2", media_type=mediatype.EPISODE)
+        items = self.channel.deduplicate_episode_titles("", [e1, e2])
+        self.assertEqual(items[0].name, "One")
+        self.assertEqual(items[1].name, "Two")
+
+
+    def test_deduplicate_episode_titles_single_episode_noop(self) -> None:
+        """SUCCESS → fewer than two episodes returns items unchanged."""
+
+        e1 = MediaItem("Only", "https://x/1", media_type=mediatype.EPISODE)
+        items = self.channel.deduplicate_episode_titles("", [e1])
+        self.assertEqual(items[0].name, "Only")
+
+    # -- create_search_result_item -----------------------------------------
+
+    def test_create_search_result_series(self) -> None:
+        """SUCCESS → type 'Series' becomes a FolderItem."""
+
+        result_set = {"content": {
+            "id": "srid", "title": "Found Series", "type": "Series", "tags": [],
+            "image": {}, "logo": {},
+        }}
+        item = self.channel.create_search_result_item(result_set)
+        self.assertIsInstance(item, FolderItem)
+        self.assertIn("/v8/series/srid", item.url)
+
+
+    def test_create_search_result_movie(self) -> None:
+        """SUCCESS → type 'Movie' becomes a playable movie."""
+
+        result_set = {"content": {
+            "id": "mrid", "title": "Found Movie", "type": "Movie", "tags": [],
+            "image": {}, "logo": {},
+        }}
+        item = self.channel.create_search_result_item(result_set)
+        self.assertIsInstance(item, MediaItem)
+        self.assertEqual(item.media_type, mediatype.MOVIE)
+        self.assertIn("context=OnDemand", item.url)
+        self.assertIn("id=mrid", item.url)
+
+
+    def test_create_search_result_episode(self) -> None:
+        """SUCCESS → an unknown type becomes an episode."""
+
+        result_set = {"content": {
+            "id": "eid", "title": "Some Episode", "type": "Vod", "tags": [],
+            "image": {}, "logo": {},
+        }}
+        item = self.channel.create_search_result_item(result_set)
+        self.assertEqual(item.media_type, mediatype.EPISODE)
+
+
+    def test_create_search_result_empty(self) -> None:
+        """SUCCESS → empty content returns None."""
+
+        self.assertIsNone(self.channel.create_search_result_item({}))
+        self.assertIsNone(self.channel.create_search_result_item({"content": {}}))
+
+    # -- extract_series_data ------------------------------------------------
+
+    def test_extract_series_data_seasons(self) -> None:
+        """SUCCESS → seasons are returned as folders, newest first."""
+
+        self.channel.parentItem = MediaItem("Series", "https://api.nlziet.nl/v8/series/sid")
+        data = json.dumps({"content": {
+            "id": "sid", "title": "My Series",
+            "seasons": [{"id": "s2", "title": "Season 2"}, {"id": "s1", "title": "Season 1"}],
+        }})
+        result_data, items = self.channel.extract_series_data(data)
+        self.assertEqual(result_data, "")
+        season_folders = [i for i in items if isinstance(i, FolderItem)]
+        self.assertEqual(len(season_folders), 2)
+        self.assertIn("seasonId=s2", season_folders[0].url)
+        self.assertIn("seasonId=s1", season_folders[1].url)
+
+
+    def test_extract_series_data_empty_content(self) -> None:
+        """SUCCESS → empty content returns no items."""
+
+        self.channel.parentItem = MediaItem("S", "https://api.nlziet.nl/v8/series/sid")
+        _, items = self.channel.extract_series_data("{}")
+        self.assertEqual(items, [])
+
+
+    def test_extract_series_data_nested_content(self) -> None:
+        """SUCCESS → handles the data.content wrapper format."""
+
+        self.channel.parentItem = MediaItem("S", "https://api.nlziet.nl/v8/series/sid")
+        data = json.dumps({"data": {"content": {
+            "id": "sid", "title": "Nested", "seasons": [{"id": "s1", "title": "S1"}],
+        }}})
+        _, items = self.channel.extract_series_data(data)
+        self.assertEqual(len([i for i in items if isinstance(i, FolderItem)]), 1)
+
+
+    def test_extract_series_data_seasonless(self) -> None:
+        """SUCCESS → a seasonless series fetches episodes directly (no intermediate folder)."""
+
+        self.channel.parentItem = MediaItem("Series", "https://api.nlziet.nl/v8/series/sid")
+        ep = MediaItem("Episode 1", "https://example.com/ep1")
+        data = json.dumps({"content": {"id": "sid", "title": "Show", "seasons": []}})
+        with patch("chn_nlziet.chn_class.Channel.process_folder_list",
+                   return_value=[ep]) as mock_pfl:
+            _, items = self.channel.extract_series_data(data)
+        mock_pfl.assert_called_once()
+        parent = mock_pfl.call_args[0][0]
+        self.assertIn("/v9/series/sid/episodes?", parent.url)
+        self.assertNotIn("seasonId", parent.url)
+        self.assertIn(ep, items)
+
+
+    def test_extract_series_data_stores_series_title_in_season_metadata(self) -> None:
+        """SUCCESS → season folders carry nlziet:series_title for Up Next support."""
+
+        self.channel.parentItem = MediaItem("Series", "https://api.nlziet.nl/v8/series/sid")
+        data = json.dumps({"content": {
+            "id": "sid", "title": "Great Show", "seasons": [{"id": "s1", "title": "Season 1"}],
+        }})
+        _, items = self.channel.extract_series_data(data)
+        season_folders = [i for i in items if isinstance(i, FolderItem)]
+        self.assertEqual(season_folders[0].metaData.get("nlziet:series_title"), "Great Show")
+
+    # -- extract_series_title ------------------------------------------------
+
+    def test_extract_series_title_reads_parent_metadata(self) -> None:
+        """SUCCESS → caches the series title read from parentItem.metaData."""
+
+        parent = FolderItem("Season 1", "https://api.nlziet.nl/v9/series/sid/episodes?seasonId=s1",
+                            content_type="episodes")
+        parent.metaData["nlziet:series_title"] = "Great Show"
+        self.channel.parentItem = parent
+        data, items = self.channel.extract_series_title("{}")
+        self.assertEqual(items, [])
+        self.assertEqual(self.channel._current_series_title, "Great Show")
+
+
+    def test_extract_series_title_no_parent_metadata(self) -> None:
+        """SUCCESS → caches an empty string when the parent has no series title."""
+
+        parent = FolderItem("Season 1", "https://api.nlziet.nl/v9/series/sid/episodes?seasonId=s1",
+                            content_type="episodes")
+        self.channel.parentItem = parent
+        self.channel.extract_series_title("{}")
+        self.assertEqual(self.channel._current_series_title, "")
+
+    # -- episode shortcuts: _fetch_continue_item / _fetch_season_episodes --
+
+    def test_fetch_continue_item(self) -> None:
+        """SUCCESS → continue watching returns a playable item from the /play endpoint."""
+
+        response = json.dumps({"content": {"id": "ep42", "title": "Familiediner"}})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response) as mock_open:
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            item = self.channel._fetch_continue_item("sid")
+        self.assertIn("ep42", item.url)
+        self.assertIn("/v9/stream/handshake", item.url)
+        self.assertTrue(item.dontGroup)
+        self.assertIn("/v9/series/sid/play", mock_open.call_args[0][0])
+
+
+    def test_fetch_continue_item_empty_response(self) -> None:
+        """SUCCESS → an empty response returns None."""
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            self.assertIsNone(self.channel._fetch_continue_item("sid"))
+
+
+    def test_fetch_continue_item_error_status_returns_none(self) -> None:
+        """SUCCESS → an HTTP error status returns None."""
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""):
+            UriHandler.instance().status = UriStatus(code=500, url=None, error=True, reason="fail")
+            self.assertIsNone(self.channel._fetch_continue_item("sid"))
+
+
+    def test_fetch_continue_item_no_content_id(self) -> None:
+        """SUCCESS → content without an id returns None."""
+
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   return_value=json.dumps({"content": {"title": "No ID"}})):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            self.assertIsNone(self.channel._fetch_continue_item("sid"))
+
+
+    def test_fetch_season_episodes_basic(self) -> None:
+        """SUCCESS → returns (broadcastAt, item) tuples in API response order."""
+
+        response = json.dumps({"data": [
+            {"content": {"id": "ep1", "subtitle": "S1:A1 Pilot",
+                        "broadcastAt": "2024-01-01T00:00:00+01:00"}},
+            {"content": {"id": "ep2", "subtitle": "S1:A2 Second",
+                        "broadcastAt": "2024-01-08T00:00:00+01:00"}},
+        ]})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response) as mock_open:
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            result = self.channel._fetch_season_episodes("sid", "s1")
+        self.assertEqual(len(result), 2)
+        broadcast_at, item = result[0]
+        self.assertEqual(broadcast_at, "2024-01-01T00:00:00+01:00")
+        self.assertIn("ep1", item.url)
+        self.assertTrue(item.dontGroup)
+        self.assertEqual(item.metaData.get("nlziet:ep_title"), "S1:A1 Pilot")
+        call_url = mock_open.call_args[0][0]
+        self.assertIn("seasonId=s1", call_url)
+        self.assertIn("limit=400", call_url)
+
+
+    def test_fetch_season_episodes_no_season_id(self) -> None:
+        """SUCCESS → an empty season_id returns [] without an HTTP call."""
+
+        with patch("resources.lib.urihandler.UriHandler.open") as mock_open:
+            result = self.channel._fetch_season_episodes("sid", "")
+        self.assertEqual(result, [])
+        mock_open.assert_not_called()
+
+
+    def test_fetch_season_episodes_empty_response(self) -> None:
+        """SUCCESS → an empty HTTP response returns []."""
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            result = self.channel._fetch_season_episodes("sid", "s1")
+        self.assertEqual(result, [])
+
+
+    def test_fetch_season_episodes_no_broadcast_at(self) -> None:
+        """SUCCESS → a missing broadcastAt is treated as an empty string."""
+
+        response = json.dumps({"data": [{"content": {"id": "ep1", "subtitle": "Afl. 1"}}]})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=response):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            result = self.channel._fetch_season_episodes("sid", "s1")
+        broadcast_at, item = result[0]
+        self.assertEqual(broadcast_at, "")
+        self.assertIn("ep1", item.url)
+
+    # -- _build_episode_shortcuts / _pick_boundary_episode / _is_ascending -
+
+    def test_build_shortcuts_all_three(self) -> None:
+        """SUCCESS → returns continue, most-recent, and first-episode shortcuts in order."""
+
+        play_response = json.dumps({"content": {"id": "cont1", "title": "Continue Ep"}})
+        # seasons[0] = oldest season (s1): first1 has the min broadcastAt.
+        oldest_eps = json.dumps({"data": [
+            {"content": {"id": "old3", "subtitle": "S0:A3 Last",
+                        "broadcastAt": "2020-03-01T00:00:00+01:00"}},
+            {"content": {"id": "first1", "subtitle": "S0:A1 Pilot",
+                        "broadcastAt": "2020-01-01T00:00:00+01:00"}},
+        ]})
+        # seasons[-1] = newest season (s2): ep10 has the max broadcastAt.
+        newest_eps = json.dumps({"data": [
+            {"content": {"id": "ep10", "subtitle": "S1:A10 Latest",
+                        "broadcastAt": "2024-03-01T00:00:00+01:00"}},
+            {"content": {"id": "ep1n", "subtitle": "S1:A1 Start",
+                        "broadcastAt": "2024-01-01T00:00:00+01:00"}},
+        ]})
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   side_effect=[play_response, newest_eps, oldest_eps]):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            shortcuts = self.channel._build_episode_shortcuts(
+                "sid", [{"id": "s1"}, {"id": "s2"}])
+        self.assertEqual(len(shortcuts), 3)
+        self.assertIn("cont1", shortcuts[0].url)
+        self.assertIn("ep10", shortcuts[1].url)
+        self.assertIn("first1", shortcuts[2].url)
+
+
+    def test_build_shortcuts_omits_continue_when_same_as_first(self) -> None:
+        """SUCCESS → continue is omitted when it points at the same episode as first."""
+
+        same_id = "same1"
+        play_response = json.dumps({"content": {"id": same_id, "title": "Same Ep"}})
+        season_eps = json.dumps({"data": [
+            {"content": {"id": same_id, "subtitle": "S1:A1 Same",
+                        "broadcastAt": "2024-01-01T00:00:00+01:00"}},
+            {"content": {"id": "last1", "subtitle": "S1:A3 Latest",
+                        "broadcastAt": "2024-03-01T00:00:00+01:00"}},
+        ]})
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   side_effect=[play_response, season_eps]):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            shortcuts = self.channel._build_episode_shortcuts("sid", [{"id": "s1"}])
+        self.assertEqual(len(shortcuts), 2)
+        urls = [s.url for s in shortcuts]
+        self.assertTrue(any("last1" in u for u in urls))
+        self.assertTrue(any(same_id in u for u in urls))
+
+
+    def test_build_shortcuts_empty_seasons(self) -> None:
+        """SUCCESS → returns [] for an empty seasons list."""
+
+        self.assertEqual(self.channel._build_episode_shortcuts("sid", []), [])
+
+
+    def test_build_shortcuts_no_series_id(self) -> None:
+        """SUCCESS → returns [] for an empty series_id."""
+
+        self.assertEqual(self.channel._build_episode_shortcuts("", [{"id": "s1"}]), [])
+
+
+    def test_build_shortcuts_all_fetches_fail(self) -> None:
+        """SUCCESS → all fetch failures are handled gracefully, returning []."""
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            shortcuts = self.channel._build_episode_shortcuts("sid", [{"id": "s1"}])
+        self.assertEqual(shortcuts, [])
+
+
+    def test_build_shortcuts_picks_by_broadcast_at(self) -> None:
+        """SUCCESS → first/latest are chosen by broadcastAt, not API response order."""
+
+        play_response = json.dumps({"content": {"id": "cont1", "title": "C"}})
+        season_eps = json.dumps({"data": [
+            {"content": {"id": "ep3", "subtitle": "S1:A3 Last",
+                        "broadcastAt": "2024-03-01T00:00:00+01:00"}},
+            {"content": {"id": "ep2", "subtitle": "S1:A2 Mid",
+                        "broadcastAt": "2024-02-01T00:00:00+01:00"}},
+            {"content": {"id": "ep1", "subtitle": "S1:A1 First",
+                        "broadcastAt": "2024-01-01T00:00:00+01:00"}},
+        ]})
+        with patch("resources.lib.urihandler.UriHandler.open",
+                   side_effect=[play_response, season_eps]):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            shortcuts = self.channel._build_episode_shortcuts("sid", [{"id": "s1"}])
+        self.assertEqual(len(shortcuts), 3)
+        self.assertIn("cont1", shortcuts[0].url)
+        self.assertIn("ep3", shortcuts[1].url)
+        self.assertIn("ep1", shortcuts[2].url)
+
+
+    @staticmethod
+    def _make_ep(ep_id: str, broadcast_at: str = ""):
+        """Helper: create a (broadcastAt, MediaItem) tuple."""
+
+        item = MediaItem(ep_id, f"https://example.com/{ep_id}")
+        return (broadcast_at, item)
+
+
+    def test_pick_boundary_none_for_empty(self) -> None:
+        """SUCCESS → returns None for empty input."""
+
+        self.assertIsNone(self.channel._pick_boundary_episode([], True))
+
+
+    def test_pick_boundary_single_item(self) -> None:
+        """SUCCESS → returns the only item regardless of direction."""
+
+        eps = [self._make_ep("only")]
+        self.assertIs(self.channel._pick_boundary_episode(eps, True), eps[0][1])
+
+
+    def test_pick_boundary_ascending_api_broadcastAt_agree(self) -> None:
+        """SUCCESS → ascending API order and broadcastAt agree on first/last."""
+
+        eps = [
+            self._make_ep("ep1", "2024-01-01T00:00:00+00:00"),
+            self._make_ep("ep2", "2024-02-01T00:00:00+00:00"),
+            self._make_ep("ep3", "2024-03-01T00:00:00+00:00"),
+        ]
+        first = self.channel._pick_boundary_episode(eps, True)
+        last = self.channel._pick_boundary_episode(eps, False)
+        self.assertIn("ep1", first.url)
+        self.assertIn("ep3", last.url)
+
+
+    def test_pick_boundary_descending_api_broadcastAt_agree(self) -> None:
+        """SUCCESS → broadcastAt corrects an inverted (descending) API order."""
+
+        eps = [
+            self._make_ep("ep3", "2024-03-01T00:00:00+00:00"),
+            self._make_ep("ep2", "2024-02-01T00:00:00+00:00"),
+            self._make_ep("ep1", "2024-01-01T00:00:00+00:00"),
+        ]
+        first = self.channel._pick_boundary_episode(eps, True)
+        last = self.channel._pick_boundary_episode(eps, False)
+        self.assertIn("ep1", first.url)
+        self.assertIn("ep3", last.url)
+
+
+    def test_pick_boundary_majority_vote_no_first_available(self) -> None:
+        """SUCCESS → descending API order: pick_first=True picks the oldest (last in list)."""
+
+        eps = [
+            self._make_ep("newest", "2024-12-01T00:00:00+00:00"),
+            self._make_ep("oldest", "2020-01-01T00:00:00+00:00"),
+        ]
+        first = self.channel._pick_boundary_episode(eps, True)
+        last = self.channel._pick_boundary_episode(eps, False)
+        self.assertIn("oldest", first.url)
+        self.assertIn("newest", last.url)
+
+
+    def test_is_ascending_non_monotonic_defaults_false(self) -> None:
+        """SUCCESS → non-monotonic broadcastAt values default to descending (False)."""
+
+        eps = [
+            self._make_ep("a", "2024-02-01T00:00:00+00:00"),
+            self._make_ep("b", "2024-01-01T00:00:00+00:00"),
+            self._make_ep("c", "2024-03-01T00:00:00+00:00"),
+        ]
+        self.assertFalse(self.channel._is_ascending(eps))
+
+
+    def test_is_ascending_missing_timestamps_defaults_false(self) -> None:
+        """SUCCESS → fewer than two dated entries defaults to descending (False)."""
+
+        eps = [self._make_ep("a", ""), self._make_ep("b", "")]
+        self.assertFalse(self.channel._is_ascending(eps))
+
+    # -- update_vod_item / search_site --------------------------------------
+
+    def test_update_vod_item_success(self) -> None:
+        """SUCCESS → a valid handshake response completes the item."""
+
+        item = MediaItem("Test", "https://api.nlziet.nl/v9/stream/handshake?context=OnDemand&id=x")
+        handshake = json.dumps({
+            "manifestUrl": "https://example.com/stream.mpd",
+            "drm": {"licenseUrl": "https://license.example.com/", "headers": {}},
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=handshake), \
+                patch("resources.lib.streams.mpd.Mpd.get_license_key", return_value="key"), \
+                patch("resources.lib.streams.mpd.Mpd.set_input_stream_addon_input"):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            result = self.channel.update_vod_item(item)
+        self.assertTrue(result.complete)
+
+
+    def test_update_vod_item_error_response_incomplete(self) -> None:
+        """SUCCESS → an error response leaves the item incomplete."""
+
+        item = MediaItem("Test", "https://api.nlziet.nl/v9/stream/handshake?context=OnDemand&id=x")
+        error_response = json.dumps({
+            "errors": [{"type": "InvalidAsset", "message": "Not playable"}],
+        })
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=error_response):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            result = self.channel.update_vod_item(item)
+        self.assertFalse(result.complete)
+
+
+    def test_search_site_forwards_needle(self) -> None:
+        """SUCCESS → search_site delegates to the base class with the search URL template."""
+
+        with patch("resources.lib.chn_class.Channel.search_site",
+                   return_value=[]) as mock_search:
+            self.channel.search_site(needle="foo")
+        args, _ = mock_search.call_args
+        self.assertIn("/v9/search", args[1])
+        self.assertEqual(args[2], "foo")
+
+    # -- _parse_duration / _set_vod_metadata --------------------------------
+
+    def test_parse_duration_hours_and_minutes(self) -> None:
+        """SUCCESS → parses combined hours and minutes."""
+
+        self.assertEqual(self.channel._parse_duration("1u 23m"), 4980)
+
+
+    def test_parse_duration_hours_only(self) -> None:
+        """SUCCESS → parses hours-only durations."""
+
+        self.assertEqual(self.channel._parse_duration("2u"), 7200)
+
+
+    def test_parse_duration_minutes_only(self) -> None:
+        """SUCCESS → parses minutes-only durations."""
+
+        self.assertEqual(self.channel._parse_duration("45m"), 2700)
+
+
+    def test_parse_duration_empty(self) -> None:
+        """SUCCESS → an empty string parses to 0."""
+
+        self.assertEqual(self.channel._parse_duration(""), 0)
+
+
+    def test_parse_duration_garbage(self) -> None:
+        """SUCCESS → unparseable input parses to 0."""
+
+        self.assertEqual(self.channel._parse_duration("no numbers"), 0)
+
+
+    def test_metadata_description_with_subtitle(self) -> None:
+        """SUCCESS → subtitle is shown as a bold heading above the description."""
+
+        item = MediaItem("test", "http://example.com")
+        content = {"subtitle": "Afl. 5", "description": "Episode plot text.",
+                   "image": {}, "logo": {}}
+        self.channel._set_vod_metadata(item, content)
+        self.assertIn("[B]Afl. 5[/B]", item.description)
+        self.assertIn("Episode plot text.", item.description)
+
+
+    def test_metadata_subtitle_equals_description(self) -> None:
+        """SUCCESS → no duplication when subtitle equals description."""
+
+        item = MediaItem("test", "http://example.com")
+        content = {"subtitle": "Same Title", "description": "Same Title", "image": {}, "logo": {}}
+        self.channel._set_vod_metadata(item, content)
+        self.assertEqual(item.description, "Same Title")
+
+
+    def test_metadata_subtitle_only(self) -> None:
+        """SUCCESS → subtitle is used as description when no description is present."""
+
+        item = MediaItem("test", "http://example.com")
+        content = {"subtitle": "Just Subtitle", "image": {}, "logo": {}}
+        self.channel._set_vod_metadata(item, content)
+        self.assertEqual(item.description, "Just Subtitle")
+
+
+    def test_metadata_poster_and_thumb(self) -> None:
+        """SUCCESS → portrait maps to poster, landscape maps to thumb."""
+
+        item = MediaItem("test", "http://example.com")
+        content = {"image": {"portraitUrl": "https://x/p.jpg", "landscapeUrl": "https://x/l.jpg"},
+                   "logo": {}}
+        self.channel._set_vod_metadata(item, content)
+        self.assertEqual(item.thumb, "https://x/l.jpg")
+        self.assertEqual(item.poster, "https://x/p.jpg")
+
+
+    def test_metadata_studio(self) -> None:
+        """SUCCESS → contentProvider maps to the Studio info label."""
+
+        item = MediaItem("test", "http://example.com")
+        content = {"contentProvider": "Rtl", "image": {}, "logo": {}}
+        self.channel._set_vod_metadata(item, content)
+        self.assertTrue(item.has_info_label("Studio"))
+
+
+    def test_metadata_broadcast_date(self) -> None:
+        """SUCCESS → broadcastedAt is parsed and applied via _apply_broadcast_date."""
+
+        item = MediaItem("test", "http://example.com")
+        content = {"broadcastedAt": "2026-02-19T20:30:00+01:00", "image": {}, "logo": {}}
+        with patch.object(self.channel, "_apply_broadcast_date") as mock_apply:
+            self.channel._set_vod_metadata(item, content)
+        mock_apply.assert_called_once_with(item, "2026-02-19T20:30:00+01:00")
+
+
+    def test_metadata_null_fields(self) -> None:
+        """SUCCESS → null image/logo/description fields do not raise."""
+
+        item = MediaItem("test", "http://example.com")
+        content = {
+            "subtitle": None, "description": None, "image": None, "logo": None,
+            "contentProvider": None, "broadcastedAt": None, "formattedDuration": None,
+        }
+        self.channel._set_vod_metadata(item, content)
 
 
 class TestNlzietLoggedOnProperty(ChannelTest):
