@@ -3,6 +3,8 @@
 
 from typing import TYPE_CHECKING, Optional
 
+import xbmcplugin
+
 from resources.lib import envcontroller
 from resources.lib.logger import Logger
 from resources.lib.addonsettings import AddonSettings
@@ -102,6 +104,7 @@ class Plugin(ActionParser):
                     channel_object = channel
                 else:
                     Logger.critical("None or more than one channels were found, unable to continue.")
+                    xbmcplugin.endOfDirectory(self.handle, False)
                     return
 
                 # init the channel as plugin
@@ -114,6 +117,7 @@ class Plugin(ActionParser):
             # From here we need the "action" keyword to be present
             if keyword.ACTION not in self.params:
                 Logger.critical("Action parameters missing from request. Parameters=%s", self.params)
+                xbmcplugin.endOfDirectory(self.handle, False)
                 return
 
             if self.params[keyword.ACTION] in \
