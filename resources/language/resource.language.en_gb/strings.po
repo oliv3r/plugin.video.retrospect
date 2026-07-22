@@ -803,7 +803,7 @@ msgid "Remove Item"
 msgstr ""
 
 msgctxt "#30379"
-msgid "First Episode"
+msgid "Oldest Episode"
 msgstr ""
 
 msgctxt "#30380"

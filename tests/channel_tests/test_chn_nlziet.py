@@ -76,16 +76,15 @@ class TestNlzietChannel(ChannelTest):
         self.assertEqual(items, [])
 
 
-    def test_initial_folder_items_returns_live_tv_folder_when_logged_on(self) -> None:
-        """SUCCESS → returns Live TV and Search when placement fetch is empty."""
+    def test_initial_folder_items_returns_search_only_when_placement_fetch_fails(self) -> None:
+        """SUCCESS → returns just Search when placement fetch fails; no fabricated Live TV item."""
 
         with patch.object(type(self.channel), "loggedOn",
                           new_callable=PropertyMock, return_value=True), \
                 patch("resources.lib.urihandler.UriHandler.open", return_value=""):
             _, items = self.channel.get_initial_folder_items("")
-        self.assertEqual(len(items), 2)
-        self.assertTrue(items[0].isLive)
-        self.assertIn("search", items[1].url.lower())
+        self.assertEqual(len(items), 1)
+        self.assertIn("search", items[0].url.lower())
 
 
     def test_initial_folder_items_includes_placement_rows(self) -> None:
@@ -102,6 +101,24 @@ class TestNlzietChannel(ChannelTest):
             _, items = self.channel.get_initial_folder_items("")
         titles = [i.name for i in items]
         self.assertIn("Trending", titles)
+
+
+    def test_initial_folder_items_uses_placement_live_row_without_duplicate(self) -> None:
+        """SUCCESS → placement-provided live row is used instead of the hardcoded fallback."""
+
+        placement_response = json.dumps({"components": [
+            {"type": "PersonalizedProgramLocationsLive",
+             "parameters": {"title": "Nu op tv",
+                             "url": "https://api.nlziet.nl/v9/epg/programlocations/live"}},
+        ]})
+        with patch.object(type(self.channel), "loggedOn",
+                          new_callable=PropertyMock, return_value=True), \
+                patch("resources.lib.urihandler.UriHandler.open",
+                      return_value=placement_response):
+            _, items = self.channel.get_initial_folder_items("")
+        live_items = [i for i in items if getattr(i, "isLive", False)]
+        self.assertEqual(len(live_items), 1)
+        self.assertEqual(live_items[0].name, "Nu op tv")
 
 
     def test_service_interval_default(self) -> None:
@@ -305,6 +322,91 @@ class TestNlzietChannel(ChannelTest):
         self.assertFalse(chn_nlziet.Channel.is_blocked)
         self.assertFalse(chn_nlziet.Channel.is_update_required)
         self.assertEqual(chn_nlziet.Channel.service_interval, chn_nlziet.APPCONFIG_HEARTBEAT_DEFAULT)
+
+
+    def test_appconfig_401_with_interactive_login_reauths_and_retries(self) -> None:
+        """SUCCESS → 401 with allow_interactive_login triggers re-auth, then a retry succeeds."""
+
+        import chn_nlziet
+        from resources.lib.authentication.authenticationresult import AuthenticationResult
+        mock_result = AuthenticationResult("user@test.nl")
+        mock_result.logged_on = True
+        calls = {"n": 0}
+
+        def _open_side_effect(*_args, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                UriHandler.instance().status = UriStatus(
+                    code=401, url=None, error=True, reason="Unauthorized")
+                return ""
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            return self._appconfig_raw()
+
+        with patch("resources.lib.urihandler.UriHandler.open", side_effect=_open_side_effect), \
+                patch.object(self.channel._authenticator, "log_on",
+                            return_value=mock_result) as mock_log_on:
+            result = self.channel._sync_appconfig(allow_interactive_login=True)
+        self.assertTrue(result)
+        mock_log_on.assert_called_once()
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(chn_nlziet.Channel._appconfig_fail_count, 0)
+
+
+    def test_appconfig_401_with_interactive_login_reauth_fails_counts_as_failure(self) -> None:
+        """SUCCESS → 401 with allow_interactive_login and a failed re-auth counts as one failure."""
+
+        import chn_nlziet
+        from resources.lib.authentication.authenticationresult import AuthenticationResult
+        mock_result = AuthenticationResult("")
+        mock_result.logged_on = False
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                patch.object(self.channel._authenticator, "log_on",
+                            return_value=mock_result) as mock_log_on:
+            UriHandler.instance().status = UriStatus(
+                code=401, url=None, error=True, reason="Unauthorized")
+            result = self.channel._sync_appconfig(allow_interactive_login=True)
+        self.assertFalse(result)
+        mock_log_on.assert_called_once()
+        self.assertEqual(chn_nlziet.Channel._appconfig_fail_count, 1)
+
+
+    def test_appconfig_401_without_interactive_login_skips_reauth(self) -> None:
+        """SUCCESS → 401 without allow_interactive_login (e.g. from the background
+        service) does not attempt re-auth, since no user is present to complete
+        a device-flow prompt."""
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                patch.object(self.channel._authenticator, "log_on") as mock_log_on:
+            UriHandler.instance().status = UriStatus(
+                code=401, url=None, error=True, reason="Unauthorized")
+            self.channel._sync_appconfig()
+        mock_log_on.assert_not_called()
+
+
+    def test_appconfig_non_401_error_skips_reauth(self) -> None:
+        """SUCCESS → a non-401 error (e.g. 503) does not attempt re-auth, even
+        with allow_interactive_login — a service outage has no login-based fix."""
+
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                patch.object(self.channel._authenticator, "log_on") as mock_log_on:
+            UriHandler.instance().status = UriStatus(
+                code=503, url=None, error=True, reason="Service Unavailable")
+            self.channel._sync_appconfig(allow_interactive_login=True)
+        mock_log_on.assert_not_called()
+
+
+    def test_service_update_does_not_allow_interactive_login(self) -> None:
+        """SUCCESS → service_update()'s appconfig sync never allows interactive
+        login recovery — the background service has no user present."""
+
+        with patch.object(self.channel, "_sync_appconfig",
+                          wraps=self.channel._sync_appconfig) as mock_sync, \
+                patch("resources.lib.urihandler.UriHandler.open", return_value=""), \
+                patch.object(self.channel._authenticator, "active_authentication"), \
+                patch.object(self.channel, "_report_epg_heartbeat"):
+            self.channel.service_update()
+        mock_sync.assert_called_once_with()
 
 
     def test_stale_by_count_resets_poll_interval_but_preserves_block_state(self) -> None:
@@ -716,8 +818,14 @@ class TestNlzietChannelUnit(ChannelTest):
                 DeprecationWarning, stacklevel=2)
 
 
+    @unittest.skipIf(not os.environ.get("NLZIET_USERNAME"), "Not testing login without credentials")
     def test_appconfig_androidtv(self) -> None:
-        """Real appconfig fetch with AndroidTV headers returns parseable JSON with expected keys.
+        """Real appconfig fetch with AndroidTV device-flow headers returns parseable JSON.
+
+        Unlike test_appconfig_unauthenticated, this exercises the device-flow
+        (AndroidTV app) auth path, which needs a real authentication token —
+        acquired in the test infra via NLZIET_USERNAME/NLZIET_PASSWORD — hence
+        the credential gate.
 
         Tests the device flow path (device_flow=True, Nlziet-AppName=AndroidTv).
         Acts as a CI canary: fails hard if isAppBlocked, emits DeprecationWarning
@@ -1384,10 +1492,31 @@ class TestNlzietChannelUnit(ChannelTest):
         }}
         self.assertIsNotNone(self.channel.create_vod_item(result_set))
 
+    # -- _vod_handshake_url -------------------------------------------------
+
+    def test_vod_handshake_url_includes_player_name(self) -> None:
+        """SUCCESS → the VOD handshake URL carries a playerName param.
+
+        The NLZIET API rejects ``/v9/stream/handshake?context=OnDemand``
+        requests with a 400 "PlayerName field is required" error when this
+        is missing — it was already appended for the two live-handshake
+        URL builders but omitted here, breaking all VOD playback.
+        """
+
+        url = self.channel._vod_handshake_url("abc123")
+        self.assertIn("playerName=", url)
+        self.assertIn(f"playerName={self.channel._player_name}", url)
+
     # -- create_episode_item ---------------------------------------------
 
     def test_create_episode_item(self) -> None:
-        """SUCCESS → season/episode parsed from formattedEpisodeNumbering."""
+        """SUCCESS → creates a playable item; no numbering is parsed here.
+
+        Season/episode numbers are no longer derived from episode text at
+        all (see _normalize_episode_sequence()) — the API's numbering text
+        is unreliable, but its array order is always correct, so numbering
+        is assigned later, purely from array position.
+        """
 
         result_set = {"content": {
             "id": "epid", "title": "Episode Title", "subtitle": "Afl. 3",
@@ -1398,8 +1527,7 @@ class TestNlzietChannelUnit(ChannelTest):
         }}
         item = self.channel.create_episode_item(result_set)
         self.assertIsInstance(item, MediaItem)
-        self.assertEqual(item.season, 1)
-        self.assertEqual(item.episode, 3)
+        self.assertFalse(item.has_info_label(MediaItem.LabelEpisode))
         self.assertTrue(item.isDrmProtected)
 
 
@@ -1413,17 +1541,16 @@ class TestNlzietChannelUnit(ChannelTest):
         self.assertEqual(item.name, "Unnamed Episode")
 
 
-    def test_create_episode_item_numbering_from_subtitle(self) -> None:
-        """SUCCESS → numbering parsed from subtitle when formattedEpisodeNumbering is absent."""
+    def test_create_episode_item_stores_subtitle_verbatim(self) -> None:
+        """SUCCESS → subtitle is cached as-is for dedup/display; not parsed for numbering."""
 
         result_set = {"content": {
             "id": "ep-sub", "title": "Patience", "subtitle": "S1:A6 Pandora's box",
             "image": {}, "logo": {},
         }}
         item = self.channel.create_episode_item(result_set)
-        self.assertEqual(item.season, 1)
-        self.assertEqual(item.episode, 6)
-        self.assertEqual(item.metaData.get("nlziet:subtitle"), "Pandora's box")
+        self.assertFalse(item.has_info_label(MediaItem.LabelEpisode))
+        self.assertEqual(item.metaData.get("nlziet:subtitle"), "S1:A6 Pandora's box")
 
 
     def test_create_episode_item_dontgroup(self) -> None:
@@ -1459,6 +1586,128 @@ class TestNlzietChannelUnit(ChannelTest):
 
         self.assertIsNone(self.channel.create_episode_item({"content": {}}))
         self.assertIsNone(self.channel.create_episode_item({}))
+
+    # -- _normalize_episode_sequence / _postprocess_series_episodes --------
+
+    @staticmethod
+    def _unnumbered_episode(name: str = "Unnumbered") -> MediaItem:
+        return MediaItem(name, f"https://x/{name}", media_type=mediatype.EPISODE)
+
+    def test_normalize_episode_sequence_numbers_by_array_position(self) -> None:
+        """SUCCESS → episodes are numbered 1..N purely by their position in the list.
+
+        No episode text is consulted at all — only array order and the
+        real season number cached from the season folder.
+        """
+
+        self.channel._current_season_number = 6
+        items = [self._unnumbered_episode("Afl. 4"), self._unnumbered_episode("Afl. 3"),
+                 self._unnumbered_episode("Afl. 2"), self._unnumbered_episode("Afl. 1")]
+        result = self.channel._normalize_episode_sequence("", items)
+        self.assertEqual([i.season for i in result], [6, 6, 6, 6])
+        self.assertEqual([i.episode for i in result], [1, 2, 3, 4])
+
+    def test_normalize_episode_sequence_defaults_season_one(self) -> None:
+        """SUCCESS → falls back to season 1 when no season number is cached."""
+
+        items = [self._unnumbered_episode("A"), self._unnumbered_episode("B")]
+        result = self.channel._normalize_episode_sequence("", items)
+        self.assertEqual([i.season for i in result], [1, 1])
+        self.assertEqual([i.episode for i in result], [1, 2])
+
+    def test_normalize_episode_sequence_ignores_preexisting_numbering(self) -> None:
+        """SUCCESS → any season/episode info already on an item is overridden by position.
+
+        Trusting per-item text (even if some already parsed "correctly")
+        would reintroduce the exact inconsistency bug this design avoids —
+        position is the single source of truth for the whole list.
+        """
+
+        e1 = self._unnumbered_episode("E1")
+        e1.set_season_info(9, 99)
+        items = [e1, self._unnumbered_episode("E2")]
+        result = self.channel._normalize_episode_sequence("", items)
+        self.assertEqual([i.season for i in result], [1, 1])
+        self.assertEqual([i.episode for i in result], [1, 2])
+
+    def test_normalize_episode_sequence_empty_list_noop(self) -> None:
+        """SUCCESS → an empty item list is returned unchanged."""
+
+        self.assertEqual(self.channel._normalize_episode_sequence("", []), [])
+
+    def test_normalize_episode_sequence_single_episode(self) -> None:
+        """SUCCESS → a single episode is numbered 1."""
+
+        items = [self._unnumbered_episode()]
+        result = self.channel._normalize_episode_sequence("", items)
+        self.assertEqual(result[0].episode, 1)
+
+    def test_postprocess_series_episodes_real_luizenmoeder_har_data(self) -> None:
+        """SUCCESS → real "De luizenmoeder" S1 HAR data ends up in exact API order.
+
+        Captured from the live API: 9 of 10 episodes carry a "S1:A<n>"
+        subtitle prefix, the A2 entry a bare "Afl. 2" placeholder — two
+        different, inconsistent formats for the very same series. None of
+        that text is parsed any more; only the array order matters, and
+        that order (A10..A1, one clean descending run) is reproduced
+        exactly via positional numbering.
+        """
+
+        raw_subtitles = [
+            "S1:A10 Special", "S1:A9 Send in the clowns", "S1:A8 Kanjertraining",
+            "S1:A7 Een helder licht", "S1:A6 Lentekriebels", "S1:A5 Winterklaas",
+            "S1:A4 Laat ze maar glanzen", "S1:A3 Er zijn er twee jarig, hoera hoera",
+            "Afl. 2", "S1:A1 Het zijn altijd de nieuwkomers",
+        ]
+        items = []
+        for idx, subtitle in enumerate(raw_subtitles):
+            result_set = {"content": {
+                "id": f"ep{idx}", "title": "De luizenmoeder", "subtitle": subtitle,
+                "image": {}, "logo": {},
+            }}
+            items.append(self.channel.create_episode_item(result_set))
+
+        result = self.channel._postprocess_series_episodes("", items)
+        # Positional, 1-based, in API order — not the real "A10..A1" numbers.
+        self.assertEqual([i.episode for i in result], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        self.assertTrue(all(i.season == 1 for i in result))
+
+    def test_postprocess_series_episodes_real_bb_vol_liefde_season6(self) -> None:
+        """SUCCESS → real "B&B Vol Liefde" Seizoen 6 data gets the real season number.
+
+        Regression test for the live bug report: this show's episodes are
+        always titled "Afl. <n>" with no "S<n>:A<n>" pattern at all, in
+        ANY season. The real season number must come from
+        extract_series_title(), which reads it from the season folder's
+        cached metaData — not from per-episode text, which carries no
+        season component at all.
+        """
+
+        self.channel._current_season_number = 6
+        raw_subtitles = ["Afl. 4", "Afl. 3", "Afl. 2", "Afl. 1"]  # real API order: newest-first
+        items = []
+        for idx, subtitle in enumerate(raw_subtitles):
+            result_set = {"content": {
+                "id": f"bb{idx}", "title": "B&B Vol Liefde", "subtitle": subtitle,
+                "image": {}, "logo": {},
+            }}
+            items.append(self.channel.create_episode_item(result_set))
+
+        result = self.channel._postprocess_series_episodes("", items)
+        self.assertTrue(all(i.season == 6 for i in result))
+        self.assertEqual([i.episode for i in result], [1, 2, 3, 4])
+
+    def test_postprocess_series_episodes_normalizes_then_dedupes(self) -> None:
+        """SUCCESS → wrapper numbers episodes and still de-duplicates titles."""
+
+        e1 = self._unnumbered_episode("Show")
+        e1.metaData["nlziet:subtitle"] = "Afl. 3"
+        e2 = self._unnumbered_episode("Show")
+        e2.metaData["nlziet:subtitle"] = "Afl. 2"
+        result = self.channel._postprocess_series_episodes("", [e1, e2])
+        self.assertEqual([i.episode for i in result], [1, 2])
+        self.assertEqual(result[0].name, "Afl. 3 (Show)")
+        self.assertEqual(result[1].name, "Afl. 2 (Show)")
 
     # -- deduplicate_episode_titles ----------------------------------------
 
@@ -1561,7 +1810,11 @@ class TestNlzietChannelUnit(ChannelTest):
             "id": "sid", "title": "My Series",
             "seasons": [{"id": "s2", "title": "Season 2"}, {"id": "s1", "title": "Season 1"}],
         }})
-        result_data, items = self.channel.extract_series_data(data)
+        # extract_series_data() also builds episode shortcuts, which fetch episodes
+        # per season — stub those calls out, this test only cares about folder order.
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            result_data, items = self.channel.extract_series_data(data)
         self.assertEqual(result_data, "")
         season_folders = [i for i in items if isinstance(i, FolderItem)]
         self.assertEqual(len(season_folders), 2)
@@ -1584,7 +1837,11 @@ class TestNlzietChannelUnit(ChannelTest):
         data = json.dumps({"data": {"content": {
             "id": "sid", "title": "Nested", "seasons": [{"id": "s1", "title": "S1"}],
         }}})
-        _, items = self.channel.extract_series_data(data)
+        # extract_series_data() also builds episode shortcuts, which fetch episodes
+        # per season — stub those calls out, this test only cares about the wrapper format.
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            _, items = self.channel.extract_series_data(data)
         self.assertEqual(len([i for i in items if isinstance(i, FolderItem)]), 1)
 
 
@@ -1611,9 +1868,41 @@ class TestNlzietChannelUnit(ChannelTest):
         data = json.dumps({"content": {
             "id": "sid", "title": "Great Show", "seasons": [{"id": "s1", "title": "Season 1"}],
         }})
-        _, items = self.channel.extract_series_data(data)
+        # extract_series_data() also builds episode shortcuts, which fetch episodes
+        # per season — stub those calls out, this test only cares about season metadata.
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            _, items = self.channel.extract_series_data(data)
         season_folders = [i for i in items if isinstance(i, FolderItem)]
         self.assertEqual(season_folders[0].metaData.get("nlziet:series_title"), "Great Show")
+
+
+    def test_extract_series_data_stores_real_season_number_in_metadata(self) -> None:
+        """SUCCESS → season folders carry the real season number, not a constant.
+
+        Regression test for the real "B&B Vol Liefde" bug: two seasons
+        titled "Seizoen 6 - Zomer 2026" and "Seizoen 5 - Zomer 2025",
+        each with plain "Afl. <n>" episode subtitles (no "S<n>:A<n>"
+        pattern at all). Every season folder must carry its own real
+        season number so create_episode_item() doesn't collapse every
+        season to season 1.
+        """
+
+        self.channel.parentItem = MediaItem("Series", "https://api.nlziet.nl/v8/series/sid")
+        data = json.dumps({"content": {
+            "id": "sid", "title": "B&B Vol Liefde",
+            "seasons": [
+                {"id": "s6", "title": "Seizoen 6 - Zomer 2026"},
+                {"id": "s5", "title": "Seizoen 5 - Zomer 2025"},
+            ],
+        }})
+        with patch("resources.lib.urihandler.UriHandler.open", return_value=""):
+            UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
+            _, items = self.channel.extract_series_data(data)
+        season_folders = {f.metaData.get("nlziet:season_number"): f
+                          for f in items if isinstance(f, FolderItem)}
+        self.assertIn("seasonId=s6", next(f.url for n, f in season_folders.items() if n == 6))
+        self.assertIn("seasonId=s5", next(f.url for n, f in season_folders.items() if n == 5))
 
     # -- extract_series_title ------------------------------------------------
 
@@ -1637,6 +1926,49 @@ class TestNlzietChannelUnit(ChannelTest):
         self.channel.parentItem = parent
         self.channel.extract_series_title("{}")
         self.assertEqual(self.channel._current_series_title, "")
+
+
+    def test_extract_series_title_reads_season_number(self) -> None:
+        """SUCCESS → caches the season number read from parentItem.metaData."""
+
+        parent = FolderItem("Season 6", "https://api.nlziet.nl/v9/series/sid/episodes?seasonId=s6",
+                            content_type="episodes")
+        parent.metaData["nlziet:season_number"] = 6
+        self.channel.parentItem = parent
+        self.channel.extract_series_title("{}")
+        self.assertEqual(self.channel._current_season_number, 6)
+
+
+    def test_extract_series_title_no_season_number_defaults_zero(self) -> None:
+        """SUCCESS → caches 0 when the parent has no season number."""
+
+        parent = FolderItem("Season 1", "https://api.nlziet.nl/v9/series/sid/episodes?seasonId=s1",
+                            content_type="episodes")
+        self.channel.parentItem = parent
+        self.channel.extract_series_title("{}")
+        self.assertEqual(self.channel._current_season_number, 0)
+
+    # -- _parse_season_number ------------------------------------------------
+
+    def test_parse_season_number_bare_digits(self) -> None:
+        """SUCCESS → a bare numeric title is used directly."""
+
+        self.assertEqual(self.channel._parse_season_number("5", 99), 5)
+
+    def test_parse_season_number_seizoen_prefix(self) -> None:
+        """SUCCESS → "Seizoen <n> - ..." titles are parsed for the number.
+
+        Matches the real NLZIET title format for shows like "B&B Vol
+        Liefde": "Seizoen 6 - Zomer 2026".
+        """
+
+        self.assertEqual(self.channel._parse_season_number("Seizoen 6 - Zomer 2026", 99), 6)
+
+    def test_parse_season_number_falls_back_to_position(self) -> None:
+        """SUCCESS → an unparseable title falls back to chronological position."""
+
+        self.assertEqual(self.channel._parse_season_number("The Finale", 3), 3)
+        self.assertEqual(self.channel._parse_season_number("", 2), 2)
 
     # -- episode shortcuts: _fetch_continue_item / _fetch_season_episodes --
 
@@ -1732,6 +2064,23 @@ class TestNlzietChannelUnit(ChannelTest):
 
     # -- _build_episode_shortcuts / _pick_boundary_episode / _is_ascending -
 
+    @staticmethod
+    def _dispatch_by_url(responses: dict):
+        """Build a UriHandler.open side_effect keyed by URL substring.
+
+        _build_episode_shortcuts() fetches continue/newest/oldest concurrently,
+        so a positional side_effect list (call order) is not safe — dispatch on
+        the requested URL instead, which is order-independent.
+        """
+
+        def _side_effect(url, *_args, **_kwargs):
+            for needle, response in responses.items():
+                if needle in url:
+                    return response
+            return ""
+        return _side_effect
+
+
     def test_build_shortcuts_all_three(self) -> None:
         """SUCCESS → returns continue, most-recent, and first-episode shortcuts in order."""
 
@@ -1751,7 +2100,11 @@ class TestNlzietChannelUnit(ChannelTest):
                         "broadcastAt": "2024-01-01T00:00:00+01:00"}},
         ]})
         with patch("resources.lib.urihandler.UriHandler.open",
-                   side_effect=[play_response, newest_eps, oldest_eps]):
+                   side_effect=self._dispatch_by_url({
+                       "/play": play_response,
+                       "seasonId=s2": newest_eps,
+                       "seasonId=s1": oldest_eps,
+                   })):
             UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
             shortcuts = self.channel._build_episode_shortcuts(
                 "sid", [{"id": "s1"}, {"id": "s2"}])
@@ -1773,7 +2126,10 @@ class TestNlzietChannelUnit(ChannelTest):
                         "broadcastAt": "2024-03-01T00:00:00+01:00"}},
         ]})
         with patch("resources.lib.urihandler.UriHandler.open",
-                   side_effect=[play_response, season_eps]):
+                   side_effect=self._dispatch_by_url({
+                       "/play": play_response,
+                       "seasonId=s1": season_eps,
+                   })):
             UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
             shortcuts = self.channel._build_episode_shortcuts("sid", [{"id": "s1"}])
         self.assertEqual(len(shortcuts), 2)
@@ -1816,7 +2172,10 @@ class TestNlzietChannelUnit(ChannelTest):
                         "broadcastAt": "2024-01-01T00:00:00+01:00"}},
         ]})
         with patch("resources.lib.urihandler.UriHandler.open",
-                   side_effect=[play_response, season_eps]):
+                   side_effect=self._dispatch_by_url({
+                       "/play": play_response,
+                       "seasonId=s1": season_eps,
+                   })):
             UriHandler.instance().status = UriStatus(code=200, url=None, error=False, reason=None)
             shortcuts = self.channel._build_episode_shortcuts("sid", [{"id": "s1"}])
         self.assertEqual(len(shortcuts), 3)

@@ -101,6 +101,7 @@ API_V9_VOD_HANDSHAKE = (
     "&id={}"
     "&drmType=Widevine"
     "&sourceType=Dash"
+    "&playerName={}"
 )
 API_V9_WATCH_IN_ADVANCE = "/v9/watchinadvance"
 
@@ -309,7 +310,7 @@ class Channel(chn_class.Channel):
             json=True,
             name="Series episodes",
             parser=["data"],
-            postprocessor=self.deduplicate_episode_titles,
+            postprocessor=self._postprocess_series_episodes,
             preprocessor=self.extract_series_title,
             requires_logon=True,
             updater=self.update_vod_item,
@@ -333,9 +334,10 @@ class Channel(chn_class.Channel):
         )
 
         self._current_series_title: str = ""
+        self._current_season_number: int = 0
 
         for _ in range(APPCONFIG_INIT_RETRY_MAX):
-            if self._sync_appconfig():
+            if self._sync_appconfig(allow_interactive_login=True):
                 break
             if not XbmcWrapper.show_yes_no(
                 "NLZIET",
@@ -401,15 +403,6 @@ class Channel(chn_class.Channel):
 
         if not self.loggedOn:
             return data, items
-
-        live_tv = FolderItem(
-            LanguageHelper.get_localized_string(LanguageHelper.LiveTv),
-            self._prefix_urls(API_V9_EPG_LIVE),
-            content_type=contenttype.NONE,
-        )
-        live_tv.isLive = True
-        live_tv.thumb = self.noImage
-        items.append(live_tv)
 
         search = FolderItem(
             LanguageHelper.get_localized_string(LanguageHelper.Search),
@@ -1378,10 +1371,12 @@ class Channel(chn_class.Channel):
         """
         Preprocessor for ``/v9/series/{id}/episodes`` URLs.
 
-        Reads the series title stored in the parent season folder's metaData
-        (set by :meth:`extract_series_data`) and caches it on this instance
-        so :meth:`create_episode_item` can populate ``tv_show_title`` for
-        Up Next.
+        Reads the series title and season number stored in the parent
+        season folder's metaData (set by :meth:`extract_series_data`) and
+        caches them on this instance so :meth:`create_episode_item` can
+        populate ``tv_show_title`` for Up Next and fall back to the real
+        season number when an episode's own numbering text doesn't carry
+        one (e.g. the plain "Afl. <n>" format has no season component).
 
         :param data: Raw JSON response, passed through unchanged.
 
@@ -1389,9 +1384,12 @@ class Channel(chn_class.Channel):
         """
 
         series_title = ""
+        season_number = 0
         if self.parentItem:
             series_title = self.parentItem.metaData.get("nlziet:series_title", "")
+            season_number = self.parentItem.metaData.get("nlziet:season_number", 0)
         self._current_series_title = series_title
+        self._current_season_number = season_number
         return data, []
 
 
@@ -1422,20 +1420,74 @@ class Channel(chn_class.Channel):
         item.isGeoLocked = True
         item.dontGroup = True
 
+        # No season/episode number is parsed from episode text here. The
+        # API's numbering text is unreliable (absent, inconsistent between
+        # captures, or in a dozen different formats — "S1:A6", "Afl. 4",
+        # bare specials, ...) but its *array order* is always correct — the
+        # real NLZIET webapp trusts it as-is and does no client-side
+        # reordering. _normalize_episode_sequence() assigns season/episode
+        # numbers from each item's position in that order, using the real
+        # season number carried by the season folder (see
+        # extract_series_title()), not from text pattern-matching.
         subtitle = content.get("subtitle") or ""
-        numbering = content.get("formattedEpisodeNumbering") or ""
-        match = re.match(r"S(\d+):A(\d+)", numbering or subtitle)
-        if match:
-            item.set_season_info(int(match.group(1)), int(match.group(2)))
-            clean = re.sub(r"^S\d+:A\d+\s*", "", subtitle)
-            if clean and clean != title:
-                item.metaData["nlziet:subtitle"] = clean
-        elif subtitle and subtitle != title:
+        if subtitle and subtitle != title:
             item.metaData["nlziet:subtitle"] = subtitle
 
         self._set_vod_metadata(item, content)
         item.HttpHeaders = self._nlziet_headers
         return item
+
+
+    def _postprocess_series_episodes(self, data: Any, items: List[MediaItem]) -> List[MediaItem]:
+        """
+        Post-process a ``/v9/series/{id}/episodes`` item list.
+
+        Combines episode-sequence normalization with title de-duplication.
+
+        :param data:  Unused; required by the post-processor signature.
+        :param items: The items produced by the parser/creator.
+
+        :return: The processed list of items.
+        """
+
+        items = self._normalize_episode_sequence(data, items)
+        return self.deduplicate_episode_titles(data, items)
+
+
+    def _normalize_episode_sequence(self, data: Any, items: List[MediaItem]) -> List[MediaItem]:
+        """
+        Assign season/episode numbers purely from API response order.
+
+        NLZIET's episode numbering text is not trustworthy as a source of
+        truth — it's absent as often as not, inconsistent between captures
+        of the very same episode, and shows up in a handful of different
+        formats depending on the show. The array *order* the API returns,
+        however, is always correct: it's exactly what the real NLZIET
+        webapp displays, unmodified — it performs no client-side episode
+        sorting at all.
+
+        So instead of trying to parse a number out of unreliable text,
+        every item is simply numbered by its position in that order
+        (1-based), using the real season number carried by the season
+        folder (see extract_series_title()). This guarantees Kodi's
+        episode sort exactly reproduces the API sequence, in either
+        direction, for every show regardless of its numbering-text quirks.
+
+        :param data:  Unused; required by the post-processor signature.
+        :param items: The items produced by the parser/creator, in API order.
+
+        :return: The (unchanged, but now numbered) list of items.
+        """
+
+        episodes = [i for i in items if not i.is_folder]
+        if not episodes:
+            return items
+
+        season = self._current_season_number or 1
+        for idx, ep in enumerate(episodes):
+            ep.set_season_info(season, idx + 1)
+
+        return items
 
 
     def deduplicate_episode_titles(self, data: Any, items: List[MediaItem]) -> List[MediaItem]:
@@ -1521,6 +1573,33 @@ class Channel(chn_class.Channel):
         return item
 
 
+    @staticmethod
+    def _parse_season_number(title: str, position: int) -> int:
+        """
+        Extract a season number from a season title.
+
+        Handles a bare numeric title (``"5"``) and a prefixed one
+        (``"Seizoen 6 - Zomer 2026"``). When neither matches, falls back
+        to the season's chronological position (1 = oldest) rather than
+        a constant — a constant would collide with real season numbers
+        for every other season in the same series.
+
+        :param title:    The season's ``title`` field from the API.
+        :param position: 1-based chronological position (1 = oldest),
+                          used when the title carries no number.
+
+        :return: The season number.
+        """
+
+        title = (title or "").strip()
+        if title.isdigit():
+            return int(title)
+        match = re.search(r"Seizoen\s*(\d+)", title, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        return position
+
+
     def extract_series_data(self, data: str) -> Tuple[str, List[MediaItem]]:
         """
         Preprocessor for ``/v8/series/{id}`` detail URLs.
@@ -1529,7 +1608,7 @@ class Channel(chn_class.Channel):
         them as folder items pointing to season-episode URLs. The downstream
         parser is skipped because the data is replaced with an empty string.
 
-        Shortcut items (Continue Watching, Most Recent Episode, First
+        Shortcut items (Continue Watching, Most Recent Episode, Oldest
         Episode) are prepended before the season folders so users can jump
         straight to an episode without drilling into seasons.
 
@@ -1554,6 +1633,11 @@ class Channel(chn_class.Channel):
 
         items: List[MediaItem] = []
         if seasons:
+            # seasons[] is chronological (oldest-first) at this point;
+            # position 1 = oldest, used as a season-number fallback when a
+            # season's own title carries no parseable number.
+            season_positions = {s.get("id"): idx + 1 for idx, s in enumerate(seasons)}
+
             # Present newest season first in the folder listing.
             for season in reversed(seasons):
                 season_id = season.get("id")
@@ -1561,12 +1645,16 @@ class Channel(chn_class.Channel):
                 if not season_id:
                     continue
 
+                season_number = self._parse_season_number(
+                    season_title, season_positions.get(season_id, 1))
+
                 url = self._prefix_urls(
                     API_V9_SERIES_SEASON_EPISODES.format(series_id, season_id))
                 folder = FolderItem(season_title or series_title, url,
                                      content_type=contenttype.EPISODES)
                 folder.complete = True
                 folder.metaData["nlziet:series_title"] = series_title
+                folder.metaData["nlziet:season_number"] = season_number
                 items.append(folder)
         else:
             # Seasonless series — fetch episodes directly to avoid an
@@ -1618,6 +1706,11 @@ class Channel(chn_class.Channel):
         """
         Build Continue / Most Recent / First episode shortcut items.
 
+        Runs the continue-item and season-episode fetches concurrently:
+        each is an independent HTTP round-trip, and this method blocks the
+        series-detail folder listing until they all return, so serialising
+        them would multiply worst-case latency by up to three.
+
         :param series_id: The series ID.
         :param seasons:   Season dicts from the series detail response,
                           oldest-first (already reversed by the caller).
@@ -1628,16 +1721,20 @@ class Channel(chn_class.Channel):
         if not series_id or not seasons:
             return []
 
-        continue_item = self._fetch_continue_item(series_id)
-
         oldest_season_id = seasons[0].get("id", "")
         newest_season_id = seasons[-1].get("id", "")
+        single_season = oldest_season_id == newest_season_id
 
-        newest_eps = self._fetch_season_episodes(series_id, newest_season_id)
-        if oldest_season_id != newest_season_id:
-            oldest_eps = self._fetch_season_episodes(series_id, oldest_season_id)
-        else:
-            oldest_eps = newest_eps
+        with ThreadPoolExecutor(max_workers=2 if single_season else 3) as executor:
+            continue_future = executor.submit(self._fetch_continue_item, series_id)
+            newest_future = executor.submit(
+                self._fetch_season_episodes, series_id, newest_season_id)
+            oldest_future = None if single_season else executor.submit(
+                self._fetch_season_episodes, series_id, oldest_season_id)
+
+            continue_item = continue_future.result()
+            newest_eps = newest_future.result()
+            oldest_eps = newest_eps if oldest_future is None else oldest_future.result()
 
         first_item = Channel._pick_boundary_episode(oldest_eps, pick_first=True)
         recent_item = Channel._pick_boundary_episode(newest_eps, pick_first=False)
@@ -1667,7 +1764,7 @@ class Channel(chn_class.Channel):
     @staticmethod
     def _shortcut_label(item: MediaItem, label_id: int) -> str:
         """
-        Build a shortcut display name like ``First Episode: Title``.
+        Build a shortcut display name like ``Oldest Episode: Title``.
 
         :param item:     The shortcut item with metaData.
         :param label_id: LanguageHelper string ID for the label.
@@ -1841,7 +1938,7 @@ class Channel(chn_class.Channel):
         :return: The handshake URL.
         """
 
-        return self._prefix_urls(API_V9_VOD_HANDSHAKE.format(content_id))
+        return self._prefix_urls(API_V9_VOD_HANDSHAKE.format(content_id, self._player_name))
 
 
     def _set_vod_metadata(self, item: MediaItem, content: dict) -> None:
@@ -2097,24 +2194,51 @@ class Channel(chn_class.Channel):
 
     # -- Background service ------------------------------------------------
 
-    def _sync_appconfig(self) -> bool:
+    def _sync_appconfig(self, allow_interactive_login: bool = False) -> bool:
         """
         Sync the channel's shared config from the API.
+
+        Almost everything NLZIET-side needs a session, so appconfig is
+        always fetched with ``_request_headers`` (auth if we have it).
+        A 401 here means the stored access token is dead — reading it
+        raw via ``authentication_headers`` does not refresh it. That is
+        an authentication problem, not a service outage, and has a known
+        fix: recover the session via the authenticator (silent token
+        refresh first, falling back to a full device-flow
+        re-authentication if the refresh token is also dead) and retry
+        once. This is distinct from a network/5xx failure below, which
+        has no automated fix and is left to the caller's retry policy.
+
+        :param allow_interactive_login: Whether a 401 may trigger the
+                                        authenticator's full recovery
+                                        cascade, including an interactive
+                                        device-flow prompt. Must be
+                                        ``False`` when called from the
+                                        headless background service
+                                        (``service_update``) — there is
+                                        no user present to complete a
+                                        device-flow prompt there.
 
         Repeated failure resets the poll interval; last-known block/update state is
         preserved rather than cleared, since we can't verify it changed.
 
         :return: - ``True`` on success,
-                 - ``False`` on any network or parse failure.
+                 - ``False`` on any auth, network, or parse failure.
         """
 
         Logger.debug(f"NLZIET: Syncing appconfig from {self.baseUrl}{API_V7_APPCONFIG}")
 
-        raw = UriHandler.open(
-            self._prefix_urls(API_V7_APPCONFIG + "?os=web&origin=app"),
-            additional_headers=self._request_headers,
-        )
+        url = self._prefix_urls(API_V7_APPCONFIG + "?os=web&origin=app")
+        raw = UriHandler.open(url, additional_headers=self._request_headers)
         status = UriHandler.last_status()
+
+        if status.code == 401 and allow_interactive_login:
+            Logger.warning("NLZIET: Appconfig rejected our session (401) — re-authenticating")
+            result = self._authenticator.log_on()
+            if result.logged_on:
+                raw = UriHandler.open(url, additional_headers=self._request_headers)
+                status = UriHandler.last_status()
+
         if status.error:
             Logger.error(f"NLZIET: Could not fetch appconfig: {status.code} {status.reason}")
             Channel._appconfig_fail_count += 1
@@ -2165,6 +2289,10 @@ class Channel(chn_class.Channel):
     def service_update(self) -> None:
         """ Periodic background callback. """
 
+        # allow_interactive_login stays False (the default): this runs in the
+        # headless background service, with no user present to complete a
+        # device-flow prompt if the session is dead. active_authentication()
+        # below still attempts a silent refresh.
         self._sync_appconfig()
         self._authenticator.active_authentication()
         self._report_epg_heartbeat()
